@@ -1,0 +1,9 @@
+{
+  "patient": {
+    "name": "Alice",
+    "age": 34
+  },
+  "report": {
+    "id": "RPT-001"
+  }
+}

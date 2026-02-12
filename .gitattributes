@@ -1,0 +1,6 @@
+* text=auto eol=lf
+
+# Office documents are binary
+*.docx binary
+*.xlsx binary
+*.pptx binary

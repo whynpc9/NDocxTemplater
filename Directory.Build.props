@@ -1,0 +1,6 @@
+<Project>
+  <PropertyGroup>
+    <RestoreIgnoreFailedSources>true</RestoreIgnoreFailedSources>
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+</Project>

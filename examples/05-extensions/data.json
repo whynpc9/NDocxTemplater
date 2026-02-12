@@ -1,0 +1,8 @@
+{
+  "reportDate": "2026-02-10T16:45:30Z",
+  "orders": [
+    { "id": "ORD-001", "amount": 12.5 },
+    { "id": "ORD-002", "amount": 100 },
+    { "id": "ORD-003", "amount": 66.2 }
+  ]
+}

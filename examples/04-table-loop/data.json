@@ -1,0 +1,10 @@
+{
+  "invoice": {
+    "no": "INV-2026-001",
+    "lines": [
+      { "name": "Apple", "qty": 2, "price": 3.5 },
+      { "name": "Banana", "qty": 3, "price": 2.2 },
+      { "name": "Orange", "qty": 5, "price": 1.8 }
+    ]
+  }
+}

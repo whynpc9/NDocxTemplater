@@ -1,0 +1,31 @@
+# Build output
+bin/
+obj/
+
+# Test output
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# IDE folders
+.vs/
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# NuGet
+*.nupkg
+*.snupkg
+
+# Local tools/cache
+.artifacts/
