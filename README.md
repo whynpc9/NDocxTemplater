@@ -15,6 +15,11 @@
 - 条件分支：`{?expr} ... {/?expr}`
 - 循环：`{#expr} ... {/expr}`
 - 表格循环：把循环标记放在表格行中，可按行复制输出列表数据
+- 图片标签（参考 docxtemplater image tag 风格）
+  - inline：`{%imagePath}`
+  - block/居中：`{%%imagePath}`
+  - 数据支持：base64 data URI、base64 字符串、文件路径
+  - 当前约束：图片标签需独占一个段落（单独一行）
 - 表达式扩展（管道语法）
   - 排序：`|sort:key:asc` 或 `|sort:key:desc`
   - 截断：`|take:10`
@@ -35,6 +40,9 @@ VIP 客户
 {#orders|sort:amount:desc|take:2}
 {id} -> {amount|format:number:0.00}
 {/orders|sort:amount:desc|take:2}
+
+{%logo}
+{%%cover}
 ```
 
 ## 快速使用
@@ -49,6 +57,17 @@ var json = File.ReadAllText("data.json");
 var outputBytes = engine.Render(templateBytes, json);
 File.WriteAllBytes("output.docx", outputBytes);
 ```
+
+## NuGet Package
+
+- Package ID: `NDocxTemplater`
+- Repository: `https://github.com/whynpc9/NDocxTemplater`
+
+发布由 GitHub Actions 自动完成：
+
+- CI：`build + test + lint(dotnet format)`
+- 发布：打 tag（如 `v0.1.0`）或手动触发 `Publish NuGet` workflow
+- NuGet API Key 使用仓库 Secret：`NUGET_API_KEY`
 
 ## Examples
 
@@ -68,6 +87,7 @@ examples/
   03-loop/
   04-table-loop/
   05-extensions/
+  06-images/
 ```
 
 各示例说明：
@@ -77,6 +97,7 @@ examples/
 - `03-loop`：段落循环
 - `04-table-loop`：表格行循环
 - `05-extensions`：排序/截断/计数/格式化
+- `06-images`：图片标签（inline/block）和循环中的图片渲染
 
 如需重新生成示例资产：
 
@@ -90,7 +111,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、排序/截断/计数/格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化。
 
 ## Acknowledgements
 

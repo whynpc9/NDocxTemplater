@@ -9,6 +9,7 @@ using NDocxTemplater;
 var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
 var examplesRoot = Path.Combine(repoRoot, "examples");
 Directory.CreateDirectory(examplesRoot);
+const string TinyPngDataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8B9pYAAAAASUVORK5CYII=";
 
 var engine = new DocxTemplateEngine();
 
@@ -137,6 +138,36 @@ GenerateExample(
     Paragraph("{#orders|sort:amount:desc|take:2}"),
     Paragraph("{id} -> {amount|format:number:0.00}"),
     Paragraph("{/orders|sort:amount:desc|take:2}"));
+
+GenerateExample(
+    examplesRoot,
+    "06-images",
+    """
+    {
+      "logo": {
+        "src": "__TINY_PNG__",
+        "width": 48,
+        "height": 24
+      },
+      "gallery": [
+        { "photo": { "src": "__TINY_PNG__", "width": 24, "height": 24 } },
+        { "photo": { "src": "__TINY_PNG__", "width": 32, "height": 20 } }
+      ]
+    }
+    """.Replace("__TINY_PNG__", TinyPngDataUri),
+    """
+    using NDocxTemplater;
+
+    var engine = new DocxTemplateEngine();
+    var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+    File.WriteAllBytes("output.docx", output);
+    """,
+    Paragraph("Inline logo"),
+    Paragraph("{%logo}"),
+    Paragraph("Gallery"),
+    Paragraph("{#gallery}"),
+    Paragraph("{%%photo}"),
+    Paragraph("{/gallery}"));
 
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 

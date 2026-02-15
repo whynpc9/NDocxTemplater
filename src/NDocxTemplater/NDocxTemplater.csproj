@@ -3,10 +3,30 @@
     <TargetFrameworks>netstandard2.0;netstandard2.1</TargetFrameworks>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <PackageId>NDocxTemplater</PackageId>
+    <Title>NDocxTemplater</Title>
+    <Description>A .NET DOCX templating engine inspired by docxtemplater, supporting tags, conditions, loops, tables, and images from JSON data.</Description>
+    <Authors>Wang Hongyi</Authors>
+    <Company>Wang Hongyi</Company>
+    <PackageTags>docx;template;openxml;report;json;templating</PackageTags>
+    <PackageProjectUrl>https://github.com/whynpc9/NDocxTemplater</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/whynpc9/NDocxTemplater.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <Deterministic>true</Deterministic>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>

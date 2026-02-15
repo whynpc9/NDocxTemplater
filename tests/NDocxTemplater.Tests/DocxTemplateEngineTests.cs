@@ -6,11 +6,15 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using Xunit;
+using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 
 namespace NDocxTemplater.Tests;
 
 public class DocxTemplateEngineTests
 {
+    private const string TinyPngDataUri =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8B9pYAAAAASUVORK5CYII=";
+
     private readonly DocxTemplateEngine _engine = new DocxTemplateEngine();
 
     [Fact]
@@ -139,6 +143,88 @@ public class DocxTemplateEngineTests
             "ORD-002 -> 100.00",
             "ORD-003 -> 66.20"
         }, renderedOrderLines);
+    }
+
+    [Fact]
+    public void Render_RendersInlineImageTag_FromDataUri()
+    {
+        var template = CreateTemplate(
+            Paragraph("Report logo"),
+            Paragraph("{%logo}"));
+
+        var json = @"{
+  ""logo"": {
+    ""src"": """ + TinyPngDataUri + @""",
+    ""width"": 32,
+    ""height"": 16
+  }
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var drawing = document.MainDocumentPart!.Document.Body!.Descendants<Drawing>().Single();
+            var extent = drawing.Descendants<DW.Extent>().Single();
+
+            Assert.Equal(32 * 9525L, extent.Cx!.Value);
+            Assert.Equal(16 * 9525L, extent.Cy!.Value);
+        }
+    }
+
+    [Fact]
+    public void Render_RendersBlockImageTag_Centered()
+    {
+        var template = CreateTemplate(Paragraph("{%%cover}"));
+
+        var json = @"{
+  ""cover"": {
+    ""src"": """ + TinyPngDataUri + @""",
+    ""width"": 24,
+    ""height"": 24
+  }
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var paragraph = document.MainDocumentPart!.Document.Body!.Elements<Paragraph>().Single();
+            var drawing = paragraph.Descendants<Drawing>().Single();
+            var extent = drawing.Descendants<DW.Extent>().Single();
+            var alignment = paragraph.ParagraphProperties?.Justification?.Val?.Value;
+
+            Assert.Equal(24 * 9525L, extent.Cx!.Value);
+            Assert.Equal(24 * 9525L, extent.Cy!.Value);
+            Assert.Equal(JustificationValues.Center, alignment);
+        }
+    }
+
+    [Fact]
+    public void Render_RendersImagesInsideLoopBlocks()
+    {
+        var template = CreateTemplate(
+            Paragraph("{#gallery}"),
+            Paragraph("{%%photo}"),
+            Paragraph("{/gallery}"));
+
+        var json = @"{
+  ""gallery"": [
+    { ""photo"": { ""src"": """ + TinyPngDataUri + @""", ""width"": 18, ""height"": 18 } },
+    { ""photo"": { ""src"": """ + TinyPngDataUri + @""", ""width"": 20, ""height"": 20 } }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var drawings = document.MainDocumentPart!.Document.Body!.Descendants<Drawing>().ToList();
+            Assert.Equal(2, drawings.Count);
+        }
     }
 
     private static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)

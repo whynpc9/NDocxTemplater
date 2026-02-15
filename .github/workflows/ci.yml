@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+jobs:
+  build-test-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore NDocxTemplater.sln
+
+      - name: Build
+        run: dotnet build NDocxTemplater.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test NDocxTemplater.sln -c Release --no-build --verbosity normal
+
+      - name: Lint (dotnet format)
+        run: dotnet format NDocxTemplater.sln --verify-no-changes --verbosity minimal

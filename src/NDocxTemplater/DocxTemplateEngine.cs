@@ -65,7 +65,7 @@ public sealed class DocxTemplateEngine
                 throw new InvalidOperationException("The DOCX template does not contain a valid document body.");
             }
 
-            var renderer = new OpenXmlTemplateRenderer(rootData);
+            var renderer = new OpenXmlTemplateRenderer(rootData, document.MainDocumentPart);
             var rootContext = new TemplateContext(rootData, rootData, null);
             renderer.RenderContainer(document.MainDocumentPart.Document.Body, rootContext);
             document.MainDocumentPart.Document.Save();
@@ -78,10 +78,13 @@ public sealed class DocxTemplateEngine
 internal sealed class OpenXmlTemplateRenderer
 {
     private readonly JToken _rootData;
+    private readonly MainDocumentPart _mainDocumentPart;
+    private uint _imageIdCounter = 1;
 
-    public OpenXmlTemplateRenderer(JToken rootData)
+    public OpenXmlTemplateRenderer(JToken rootData, MainDocumentPart mainDocumentPart)
     {
         _rootData = rootData;
+        _mainDocumentPart = mainDocumentPart;
     }
 
     public void RenderContainer(OpenXmlCompositeElement container, TemplateContext context)
@@ -187,7 +190,7 @@ internal sealed class OpenXmlTemplateRenderer
                 startMarker.RawToken));
     }
 
-    private static void RenderBlock(
+    private void RenderBlock(
         IReadOnlyCollection<OpenXmlElement> blockTemplates,
         ICollection<OpenXmlElement> renderedChildren,
         TemplateContext context)
@@ -200,15 +203,25 @@ internal sealed class OpenXmlTemplateRenderer
         }
     }
 
-    private static void RenderElement(OpenXmlElement element, TemplateContext context)
+    private void RenderElement(OpenXmlElement element, TemplateContext context)
     {
         if (element is OpenXmlCompositeElement composite)
         {
-            var renderer = new OpenXmlTemplateRenderer(context.Root);
-            renderer.RenderContainer(composite, context);
+            RenderContainer(composite, context);
+        }
+
+        if (element is Paragraph paragraph
+            && ImageTemplateRenderer.TryRenderImageTag(paragraph, context, _mainDocumentPart, NextImageId))
+        {
+            return;
         }
 
         ReplaceInlineTags(element, context);
+    }
+
+    private uint NextImageId()
+    {
+        return _imageIdCounter++;
     }
 
     private static void ReplaceInlineTags(OpenXmlElement element, TemplateContext context)
@@ -227,6 +240,11 @@ internal sealed class OpenXmlTemplateRenderer
                 if (ControlMarker.IsControlToken(expression))
                 {
                     return string.Empty;
+                }
+
+                if (ImageTagParser.TryParseToken(expression, out _))
+                {
+                    return match.Value;
                 }
 
                 var resolved = ExpressionEvaluator.Evaluate(expression, context);
