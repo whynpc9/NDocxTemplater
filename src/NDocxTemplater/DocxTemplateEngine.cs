@@ -4,11 +4,15 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using JArray = System.Text.Json.Nodes.JsonArray;
+using JObject = System.Text.Json.Nodes.JsonObject;
+using JToken = System.Text.Json.Nodes.JsonNode;
+using JValue = System.Text.Json.Nodes.JsonValue;
 
 namespace NDocxTemplater;
 
@@ -56,7 +60,11 @@ public sealed class DocxTemplateEngine
         templateStream.CopyTo(outputStream);
         outputStream.Position = 0;
 
-        var rootData = JToken.Parse(jsonData);
+        var rootData = JsonNode.Parse(jsonData);
+        if (rootData == null)
+        {
+            throw new InvalidOperationException("The JSON data could not be parsed.");
+        }
 
         using (var document = WordprocessingDocument.Open(outputStream, true))
         {
@@ -256,14 +264,14 @@ internal sealed class OpenXmlTemplateRenderer
 
 internal sealed class TemplateContext
 {
-    public TemplateContext(JToken current, JToken root, TemplateContext? parent)
+    public TemplateContext(JToken? current, JToken root, TemplateContext? parent)
     {
         Current = current;
         Root = root;
         Parent = parent;
     }
 
-    public JToken Current { get; }
+    public JToken? Current { get; }
 
     public JToken Root { get; }
 
@@ -288,22 +296,22 @@ internal static class ExpressionEvaluator
 
         for (var index = 1; index < steps.Count; index++)
         {
-            value = ApplyOperation(value, steps[index], context);
+            value = ApplyOperation(value, steps[index]);
         }
 
         return value;
     }
 
-    public static IEnumerable<JToken> ToLoopItems(JToken? token)
+    public static IEnumerable<JToken?> ToLoopItems(JToken? token)
     {
-        if (token == null || token.Type == JTokenType.Null)
+        if (JsonNodeHelpers.IsNull(token))
         {
-            return Enumerable.Empty<JToken>();
+            return Enumerable.Empty<JToken?>();
         }
 
         if (token is JArray array)
         {
-            return array.Children<JToken>().ToList();
+            return array.Select(static item => item).ToList();
         }
 
         if (IsTruthy(token))
@@ -311,55 +319,75 @@ internal static class ExpressionEvaluator
             return new[] { token };
         }
 
-        return Enumerable.Empty<JToken>();
+        return Enumerable.Empty<JToken?>();
     }
 
     public static bool IsTruthy(JToken? token)
     {
-        if (token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(token))
         {
             return false;
         }
 
-        switch (token.Type)
+        if (JsonNodeHelpers.TryGetBoolean(token, out var boolValue))
         {
-            case JTokenType.Boolean:
-                return token.Value<bool>();
-            case JTokenType.String:
-                return !string.IsNullOrWhiteSpace(token.Value<string>());
-            case JTokenType.Integer:
-            case JTokenType.Float:
-                return Math.Abs(token.Value<double>()) > double.Epsilon;
-            case JTokenType.Array:
-                return token.Any();
-            case JTokenType.Object:
-                return token.HasValues;
-            default:
-                return true;
+            return boolValue;
         }
+
+        if (JsonNodeHelpers.TryGetString(token, out var stringValue))
+        {
+            return !string.IsNullOrWhiteSpace(stringValue);
+        }
+
+        if (JsonNodeHelpers.TryGetDouble(token, out var doubleValue))
+        {
+            return Math.Abs(doubleValue) > double.Epsilon;
+        }
+
+        if (token is JArray array)
+        {
+            return array.Count > 0;
+        }
+
+        if (token is JObject obj)
+        {
+            return obj.Count > 0;
+        }
+
+        return true;
     }
 
     public static string ToText(JToken? token)
     {
-        if (token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(token))
         {
             return string.Empty;
         }
 
-        if (token is JValue value)
+        if (JsonNodeHelpers.TryGetString(token, out var stringValue))
         {
-            if (value.Value is IFormattable formattable)
-            {
-                return formattable.ToString(null, CultureInfo.InvariantCulture);
-            }
-
-            return value.Value?.ToString() ?? string.Empty;
+            return stringValue ?? string.Empty;
         }
 
-        return token.ToString(Formatting.None);
+        if (JsonNodeHelpers.TryGetBoolean(token, out var boolValue))
+        {
+            return boolValue ? "True" : "False";
+        }
+
+        if (JsonNodeHelpers.TryGetDecimal(token, out var decimalValue))
+        {
+            return decimalValue.ToString(null, CultureInfo.InvariantCulture);
+        }
+
+        if (JsonNodeHelpers.TryGetDateTime(token, out var dateValue))
+        {
+            return dateValue.ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        return token!.ToJsonString();
     }
 
-    private static JToken? ApplyOperation(JToken? value, string operation, TemplateContext context)
+    private static JToken? ApplyOperation(JToken? value, string operation)
     {
         var parts = operation.Split(':');
         if (parts.Length == 0)
@@ -376,9 +404,9 @@ internal static class ExpressionEvaluator
             case "take":
                 return ApplyTake(value, parts);
             case "count":
-                return new JValue(Count(value));
+                return JsonValue.Create(Count(value));
             case "format":
-                return ApplyFormat(value, parts, context);
+                return ApplyFormat(value, parts);
             default:
                 throw new InvalidOperationException(
                     string.Format(
@@ -404,7 +432,7 @@ internal static class ExpressionEvaluator
         var direction = parts.Count >= 3 ? parts[2].Trim() : "asc";
         var descending = string.Equals(direction, "desc", StringComparison.OrdinalIgnoreCase);
 
-        var sorted = sourceArray.Children<JToken>().ToList();
+        var sorted = sourceArray.Select(static item => item).ToList();
         sorted.Sort((left, right) => CompareTokens(
             PathResolver.ResolveFrom(left, keyPath),
             PathResolver.ResolveFrom(right, keyPath)));
@@ -414,7 +442,13 @@ internal static class ExpressionEvaluator
             sorted.Reverse();
         }
 
-        return new JArray(sorted);
+        var result = new JArray();
+        foreach (var item in sorted)
+        {
+            result.Add(JsonNodeHelpers.DeepClone(item));
+        }
+
+        return result;
     }
 
     private static JToken? ApplyTake(JToken? value, IReadOnlyList<string> parts)
@@ -429,15 +463,21 @@ internal static class ExpressionEvaluator
             throw new InvalidOperationException("take operation requires integer count: take:N.");
         }
 
+        var result = new JArray();
         if (takeCount <= 0)
         {
-            return new JArray();
+            return result;
         }
 
-        return new JArray(sourceArray.Children<JToken>().Take(takeCount));
+        foreach (var item in sourceArray.Take(takeCount))
+        {
+            result.Add(JsonNodeHelpers.DeepClone(item));
+        }
+
+        return result;
     }
 
-    private static JToken ApplyFormat(JToken? value, IReadOnlyList<string> parts, TemplateContext context)
+    private static JToken ApplyFormat(JToken? value, IReadOnlyList<string> parts)
     {
         if (parts.Count < 3)
         {
@@ -449,7 +489,7 @@ internal static class ExpressionEvaluator
 
         if (string.IsNullOrEmpty(pattern))
         {
-            return new JValue(string.Empty);
+            return JsonValue.Create(string.Empty)!;
         }
 
         switch (formatKind)
@@ -458,7 +498,7 @@ internal static class ExpressionEvaluator
             case "numeric":
                 if (TryGetDecimal(value, out var decimalValue))
                 {
-                    return new JValue(decimalValue.ToString(pattern, CultureInfo.InvariantCulture));
+                    return JsonValue.Create(decimalValue.ToString(pattern, CultureInfo.InvariantCulture))!;
                 }
                 break;
             case "date":
@@ -466,7 +506,7 @@ internal static class ExpressionEvaluator
             case "time":
                 if (TryGetDateTime(value, out var dateValue))
                 {
-                    return new JValue(dateValue.ToString(pattern, CultureInfo.InvariantCulture));
+                    return JsonValue.Create(dateValue.ToString(pattern, CultureInfo.InvariantCulture))!;
                 }
                 break;
             default:
@@ -477,37 +517,42 @@ internal static class ExpressionEvaluator
                         formatKind));
         }
 
-        return new JValue(ToText(value));
+        return JsonValue.Create(ToText(value))!;
     }
 
     private static int Count(JToken? value)
     {
-        if (value == null || value.Type == JTokenType.Null || value.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(value))
         {
             return 0;
         }
 
-        switch (value.Type)
+        if (value is JArray array)
         {
-            case JTokenType.Array:
-                return value.Count();
-            case JTokenType.Object:
-                return value.Children<JProperty>().Count();
-            case JTokenType.String:
-                return value.Value<string>()?.Length ?? 0;
-            default:
-                return 1;
+            return array.Count;
         }
+
+        if (value is JObject obj)
+        {
+            return obj.Count;
+        }
+
+        if (JsonNodeHelpers.TryGetString(value, out var stringValue))
+        {
+            return stringValue?.Length ?? 0;
+        }
+
+        return 1;
     }
 
     private static int CompareTokens(JToken? left, JToken? right)
     {
-        if (left == null || left.Type == JTokenType.Null || left.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(left))
         {
-            return right == null || right.Type == JTokenType.Null || right.Type == JTokenType.Undefined ? 0 : -1;
+            return JsonNodeHelpers.IsNull(right) ? 0 : -1;
         }
 
-        if (right == null || right.Type == JTokenType.Null || right.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(right))
         {
             return 1;
         }
@@ -530,20 +575,14 @@ internal static class ExpressionEvaluator
     private static bool TryGetDecimal(JToken? token, out decimal value)
     {
         value = 0m;
-        if (token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(token))
         {
             return false;
         }
 
-        if (token is JValue jValue)
+        if (JsonNodeHelpers.TryGetDecimal(token, out value))
         {
-            switch (jValue.Type)
-            {
-                case JTokenType.Integer:
-                case JTokenType.Float:
-                    value = Convert.ToDecimal(jValue.Value, CultureInfo.InvariantCulture);
-                    return true;
-            }
+            return true;
         }
 
         return decimal.TryParse(ToText(token), NumberStyles.Any, CultureInfo.InvariantCulture, out value);
@@ -552,14 +591,13 @@ internal static class ExpressionEvaluator
     private static bool TryGetDateTime(JToken? token, out DateTime value)
     {
         value = default;
-        if (token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(token))
         {
             return false;
         }
 
-        if (token is JValue jValue && jValue.Value is DateTime date)
+        if (JsonNodeHelpers.TryGetDateTime(token, out value))
         {
-            value = date;
             return true;
         }
 
@@ -635,7 +673,7 @@ internal static class PathResolver
                 continue;
             }
 
-            if (!(cursor is JObject obj) || !obj.TryGetValue(segment.Name, StringComparison.Ordinal, out var propertyValue))
+            if (!(cursor is JObject obj) || !JsonNodeHelpers.TryGetPropertyValue(obj, segment.Name, out var propertyValue))
             {
                 return null;
             }
@@ -720,6 +758,138 @@ internal static class PathResolver
         {
             return new PathSegment(string.Empty, index, true);
         }
+    }
+}
+
+internal static class JsonNodeHelpers
+{
+    public static bool IsNull(JToken? node)
+    {
+        return node == null;
+    }
+
+    public static bool TryGetPropertyValue(JObject obj, string name, out JToken? value)
+    {
+        foreach (var pair in obj)
+        {
+            if (string.Equals(pair.Key, name, StringComparison.Ordinal))
+            {
+                value = pair.Value;
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    public static bool TryGetString(JToken? node, out string? value)
+    {
+        if (node is JsonValue jsonValue)
+        {
+            try
+            {
+                value = jsonValue.GetValue<string>();
+                return true;
+            }
+            catch
+            {
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    public static bool TryGetBoolean(JToken? node, out bool value)
+    {
+        if (node is JsonValue jsonValue)
+        {
+            try
+            {
+                value = jsonValue.GetValue<bool>();
+                return true;
+            }
+            catch
+            {
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    public static bool TryGetDouble(JToken? node, out double value)
+    {
+        if (node is JsonValue jsonValue)
+        {
+            try
+            {
+                value = jsonValue.GetValue<double>();
+                return true;
+            }
+            catch
+            {
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    public static bool TryGetDecimal(JToken? node, out decimal value)
+    {
+        if (node is JsonValue jsonValue)
+        {
+            try
+            {
+                value = jsonValue.GetValue<decimal>();
+                return true;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                value = Convert.ToDecimal(jsonValue.GetValue<double>(), CultureInfo.InvariantCulture);
+                return true;
+            }
+            catch
+            {
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    public static bool TryGetDateTime(JToken? node, out DateTime value)
+    {
+        if (node is JsonValue jsonValue)
+        {
+            try
+            {
+                value = jsonValue.GetValue<DateTime>();
+                return true;
+            }
+            catch
+            {
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    public static JToken? DeepClone(JToken? node)
+    {
+        if (node == null)
+        {
+            return null;
+        }
+
+        return JsonNode.Parse(node.ToJsonString());
     }
 }
 

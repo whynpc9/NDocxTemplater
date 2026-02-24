@@ -3,13 +3,16 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json.Nodes;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
-using Newtonsoft.Json.Linq;
 using A = DocumentFormat.OpenXml.Drawing;
 using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
+using JArray = System.Text.Json.Nodes.JsonArray;
+using JObject = System.Text.Json.Nodes.JsonObject;
+using JToken = System.Text.Json.Nodes.JsonNode;
 
 namespace NDocxTemplater;
 
@@ -178,17 +181,17 @@ internal static class ImageInputResolver
 {
     public static IEnumerable<ImagePayload> ResolveMany(JToken? token)
     {
-        if (token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Undefined)
+        if (JsonNodeHelpers.IsNull(token))
         {
             return Enumerable.Empty<ImagePayload>();
         }
 
         if (token is JArray array)
         {
-            return array.Children<JToken>().Select(ResolveSingle).ToList();
+            return array.Where(static item => item != null).Select(static item => ResolveSingle(item!)).ToList();
         }
 
-        return new[] { ResolveSingle(token) };
+        return new[] { ResolveSingle(token!) };
     }
 
     private static ImagePayload ResolveSingle(JToken token)
@@ -197,9 +200,9 @@ internal static class ImageInputResolver
         int? width = null;
         int? height = null;
 
-        if (token.Type == JTokenType.String)
+        if (JsonNodeHelpers.TryGetString(token, out var stringToken))
         {
-            source = token.Value<string>();
+            source = stringToken;
         }
         else if (token is JObject obj)
         {
@@ -373,31 +376,56 @@ internal static class ImageInputResolver
 
     private static string? ReadString(JObject obj, string key)
     {
-        if (!obj.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out var token))
+        foreach (var pair in obj)
         {
-            return null;
+            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (JsonNodeHelpers.TryGetString(pair.Value, out var text))
+            {
+                return text;
+            }
+
+            return pair.Value?.ToJsonString();
         }
 
-        return token?.Type == JTokenType.String ? token.Value<string>() : token?.ToString();
+        return null;
     }
 
     private static int? ReadInteger(JObject obj, string key)
     {
-        if (!obj.TryGetValue(key, StringComparison.OrdinalIgnoreCase, out var token)
-            || token == null
-            || token.Type == JTokenType.Null)
+        foreach (var pair in obj)
         {
+            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var token = pair.Value;
+            if (JsonNodeHelpers.IsNull(token))
+            {
+                return null;
+            }
+
+            if (token is JsonValue jsonValue)
+            {
+                try
+                {
+                    return jsonValue.GetValue<int>();
+                }
+                catch
+                {
+                }
+            }
+
+            if (int.TryParse(token!.ToJsonString().Trim('\"'), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
+            {
+                return value;
+            }
+
             return null;
-        }
-
-        if (token.Type == JTokenType.Integer)
-        {
-            return token.Value<int>();
-        }
-
-        if (int.TryParse(token.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value))
-        {
-            return value;
         }
 
         return null;
