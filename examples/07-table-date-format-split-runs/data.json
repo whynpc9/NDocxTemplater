@@ -1,0 +1,6 @@
+{
+  "rows": [
+    { "name": "Row A", "createdAt": "2026-02-24T10:11:12Z" },
+    { "name": "Row B", "createdAt": "2026-03-01T01:02:03Z" }
+  ]
+}

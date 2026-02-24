@@ -15,6 +15,7 @@
 - 条件分支：`{?expr} ... {/?expr}`
 - 循环：`{#expr} ... {/expr}`
 - 表格循环：把循环标记放在表格行中，可按行复制输出列表数据
+- 支持 Word 将标签拆分到多个 Run/Text 节点后的渲染（包含表格单元格内格式表达式）
 - 图片标签（参考 docxtemplater image tag 风格）
   - inline：`{%imagePath}`
   - block/居中：`{%%imagePath}`
@@ -88,6 +89,7 @@ examples/
   04-table-loop/
   05-extensions/
   06-images/
+  07-table-date-format-split-runs/
 ```
 
 各示例说明：
@@ -98,6 +100,7 @@ examples/
 - `04-table-loop`：表格行循环
 - `05-extensions`：排序/截断/计数/格式化
 - `06-images`：图片标签（inline/block）和循环中的图片渲染
+- `07-table-date-format-split-runs`：表格单元格内被拆分 Run 的日期格式表达式渲染
 
 如需重新生成示例资产：
 
@@ -111,7 +114,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

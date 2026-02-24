@@ -227,6 +227,30 @@ public class DocxTemplateEngineTests
         }
     }
 
+    [Fact]
+    public void Render_FormatsDateExpressionInTable_WhenTagIsSplitAcrossRuns()
+    {
+        var template = CreateTemplate(
+            new Table(
+                TableRow(Cell("Name"), Cell("Created")),
+                TableRow(Cell("{#rows}"), Cell(string.Empty)),
+                TableRow(
+                    Cell("{name}"),
+                    CellWithSplitRuns("{createdAt|for", "mat:date:yyyy-MM-", "dd}")),
+                TableRow(Cell("{/rows}"), Cell(string.Empty))));
+
+        const string json = @"{
+  ""rows"": [
+    { ""name"": ""A"", ""createdAt"": ""2026-02-24T10:11:12Z"" }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+        var rows = ReadFirstTableRows(output);
+
+        Assert.Equal(new[] { "A", "2026-02-24" }, rows[1]);
+    }
+
     private static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
     {
         using (var stream = new MemoryStream())
@@ -271,6 +295,17 @@ public class DocxTemplateEngineTests
     private static TableCell Cell(string text)
     {
         return new TableCell(new Paragraph(new Run(new Text(text))));
+    }
+
+    private static TableCell CellWithSplitRuns(params string[] pieces)
+    {
+        var paragraph = new Paragraph();
+        foreach (var piece in pieces)
+        {
+            paragraph.Append(new Run(new Text(piece)));
+        }
+
+        return new TableCell(paragraph);
     }
 
     private static IReadOnlyList<string> ReadBodyParagraphTexts(byte[] docx)

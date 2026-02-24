@@ -234,6 +234,12 @@ internal sealed class OpenXmlTemplateRenderer
 
     private static void ReplaceInlineTags(OpenXmlElement element, TemplateContext context)
     {
+        if (element is Paragraph paragraph)
+        {
+            ReplaceInlineTagsInParagraph(paragraph, context);
+            return;
+        }
+
         foreach (var textNode in element.Descendants<Text>())
         {
             if (string.IsNullOrEmpty(textNode.Text))
@@ -241,24 +247,87 @@ internal sealed class OpenXmlTemplateRenderer
                 continue;
             }
 
-            textNode.Text = TagPatterns.InlineTagRegex.Replace(textNode.Text, match =>
-            {
-                var expression = match.Groups[1].Value.Trim();
-
-                if (ControlMarker.IsControlToken(expression))
-                {
-                    return string.Empty;
-                }
-
-                if (ImageTagParser.TryParseToken(expression, out _))
-                {
-                    return match.Value;
-                }
-
-                var resolved = ExpressionEvaluator.Evaluate(expression, context);
-                return ExpressionEvaluator.ToText(resolved);
-            });
+            textNode.Text = ReplaceInlineTagsInText(textNode.Text, context);
         }
+    }
+
+    private static void ReplaceInlineTagsInParagraph(Paragraph paragraph, TemplateContext context)
+    {
+        var textNodes = paragraph.Descendants<Text>().ToList();
+        if (textNodes.Count == 0)
+        {
+            return;
+        }
+
+        if (textNodes.Count == 1)
+        {
+            var onlyText = textNodes[0];
+            if (!string.IsNullOrEmpty(onlyText.Text))
+            {
+                onlyText.Text = ReplaceInlineTagsInText(onlyText.Text, context);
+            }
+
+            return;
+        }
+
+        var combinedText = string.Concat(textNodes.Select(static node => node.Text));
+        if (string.IsNullOrEmpty(combinedText) || combinedText.IndexOf('{') < 0 || combinedText.IndexOf('}') < 0)
+        {
+            foreach (var textNode in textNodes)
+            {
+                if (!string.IsNullOrEmpty(textNode.Text))
+                {
+                    textNode.Text = ReplaceInlineTagsInText(textNode.Text, context);
+                }
+            }
+
+            return;
+        }
+
+        var combinedReplaced = ReplaceInlineTagsInText(combinedText, context);
+        var perNodeReplacedCombined = string.Concat(textNodes.Select(node => ReplaceInlineTagsInText(node.Text, context)));
+
+        if (string.Equals(combinedReplaced, perNodeReplacedCombined, StringComparison.Ordinal))
+        {
+            for (var index = 0; index < textNodes.Count; index++)
+            {
+                textNodes[index].Text = ReplaceInlineTagsInText(textNodes[index].Text, context);
+            }
+
+            return;
+        }
+
+        textNodes[0].Text = combinedReplaced;
+        for (var index = 1; index < textNodes.Count; index++)
+        {
+            textNodes[index].Text = string.Empty;
+        }
+    }
+
+    private static string ReplaceInlineTagsInText(string text, TemplateContext context)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return text;
+        }
+
+        return TagPatterns.InlineTagRegex.Replace(text, match =>
+        {
+            var expression = match.Groups[1].Value.Trim();
+
+            if (ControlMarker.IsControlToken(expression))
+            {
+                return string.Empty;
+            }
+
+            if (ImageTagParser.TryParseToken(expression, out _))
+            {
+                return match.Value;
+            }
+
+            var resolved = ExpressionEvaluator.Evaluate(expression, context);
+            return ExpressionEvaluator.ToText(resolved);
+        });
     }
 }
 

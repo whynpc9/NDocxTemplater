@@ -169,6 +169,32 @@ GenerateExample(
     Paragraph("{%%photo}"),
     Paragraph("{/gallery}"));
 
+GenerateExample(
+    examplesRoot,
+    "07-table-date-format-split-runs",
+    """
+    {
+      "rows": [
+        { "name": "Row A", "createdAt": "2026-02-24T10:11:12Z" },
+        { "name": "Row B", "createdAt": "2026-03-01T01:02:03Z" }
+      ]
+    }
+    """,
+    """
+    using NDocxTemplater;
+
+    var engine = new DocxTemplateEngine();
+    var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+    File.WriteAllBytes("output.docx", output);
+    """,
+    new Table(
+        TableRow(Cell("Name"), Cell("Created")),
+        TableRow(Cell("{#rows}"), Cell(string.Empty)),
+        TableRow(
+            Cell("{name}"),
+            CellWithSplitRuns("{createdAt|for", "mat:date:yyyy-MM-", "dd}")),
+        TableRow(Cell("{/rows}"), Cell(string.Empty))));
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;
@@ -259,4 +285,15 @@ static TableRow TableRow(params TableCell[] cells)
 static TableCell Cell(string text)
 {
     return new TableCell(new Paragraph(new Run(new Text(text))));
+}
+
+static TableCell CellWithSplitRuns(params string[] pieces)
+{
+    var paragraph = new Paragraph();
+    foreach (var piece in pieces)
+    {
+        paragraph.Append(new Run(new Text(piece)));
+    }
+
+    return new TableCell(paragraph);
 }
