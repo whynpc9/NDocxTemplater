@@ -209,6 +209,38 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_SupportsInlineCountConditionalAndPercentPermilleFormatting()
+    {
+        var template = CreateTemplate(
+            Paragraph(
+                "本次样本共{institutions|count}家机构，状态：{flags.includeRates|if:包含比率指标:不包含比率指标}，环比增长率{metrics.growthRate|format:percent:0.00}，坏账率{metrics.badDebtRate|format:permille:0.00}。"),
+            Paragraph(
+                "备用写法（number pattern）：{metrics.growthRate|format:number:0.00%} / {metrics.badDebtRate|format:number:0.00‰}"));
+
+        const string json = @"{
+  ""flags"": { ""includeRates"": true },
+  ""metrics"": {
+    ""growthRate"": 0.0123,
+    ""badDebtRate"": 0.0045
+  },
+  ""institutions"": [
+    { ""name"": ""机构A"" },
+    { ""name"": ""机构B"" },
+    { ""name"": ""机构C"" }
+  ]
+}";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json));
+
+        Assert.Contains(
+            "本次样本共3家机构，状态：包含比率指标，环比增长率1.23%，坏账率4.50‰。",
+            lines);
+        Assert.Contains(
+            "备用写法（number pattern）：1.23% / 4.50‰",
+            lines);
+    }
+
+    [Fact]
     public void Render_RendersInlineImageTag_FromDataUri()
     {
         var template = CreateTemplate(

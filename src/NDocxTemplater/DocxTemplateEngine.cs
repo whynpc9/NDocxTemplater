@@ -489,6 +489,8 @@ internal static class ExpressionEvaluator
                 return ApplyExtremaBy(value, parts, pickMax: false);
             case "count":
                 return JsonValue.Create(Count(value));
+            case "if":
+                return ApplyInlineIf(value, parts);
             case "format":
                 return ApplyFormat(value, parts);
             default:
@@ -711,33 +713,70 @@ internal static class ExpressionEvaluator
         return JsonNodeHelpers.DeepClone(bestItem);
     }
 
+    private static JToken ApplyInlineIf(JToken? value, IReadOnlyList<string> parts)
+    {
+        if (parts.Count < 2)
+        {
+            throw new InvalidOperationException("if operation requires at least true branch text: if:trueText[:falseText].");
+        }
+
+        var whenTrue = parts[1];
+        var whenFalse = parts.Count >= 3
+            ? string.Join(":", parts.Skip(2))
+            : string.Empty;
+
+        return JsonValue.Create(IsTruthy(value) ? whenTrue : whenFalse)!;
+    }
+
     private static JToken ApplyFormat(JToken? value, IReadOnlyList<string> parts)
     {
-        if (parts.Count < 3)
+        if (parts.Count < 2)
         {
-            throw new InvalidOperationException("format operation requires kind and pattern: format:number:0.00.");
+            throw new InvalidOperationException("format operation requires format kind: format:number:0.00.");
         }
 
         var formatKind = parts[1].Trim().ToLowerInvariant();
         var pattern = string.Join(":", parts.Skip(2)).Trim();
 
-        if (string.IsNullOrEmpty(pattern))
-        {
-            return JsonValue.Create(string.Empty)!;
-        }
-
         switch (formatKind)
         {
             case "number":
             case "numeric":
+                if (string.IsNullOrEmpty(pattern))
+                {
+                    throw new InvalidOperationException("format:number requires pattern: format:number:0.00.");
+                }
+
                 if (TryGetDecimal(value, out var decimalValue))
                 {
                     return JsonValue.Create(decimalValue.ToString(pattern, CultureInfo.InvariantCulture))!;
                 }
                 break;
+            case "percent":
+            case "percentage":
+                if (TryGetDecimal(value, out var percentValue))
+                {
+                    var percentPattern = string.IsNullOrEmpty(pattern) ? "0.##%" : EnsureSuffixPattern(pattern, "%");
+                    return JsonValue.Create(percentValue.ToString(percentPattern, CultureInfo.InvariantCulture))!;
+                }
+                break;
+            case "permille":
+            case "per-mille":
+            case "per_mille":
+                if (TryGetDecimal(value, out var permilleValue))
+                {
+                    var permillePattern = string.IsNullOrEmpty(pattern) ? "0.##‰" : EnsureSuffixPattern(pattern, "‰");
+                    return JsonValue.Create(permilleValue.ToString(permillePattern, CultureInfo.InvariantCulture))!;
+                }
+                break;
             case "date":
             case "datetime":
             case "time":
+                if (string.IsNullOrEmpty(pattern))
+                {
+                    throw new InvalidOperationException("format:date requires pattern: format:date:yyyy-MM-dd.");
+                }
+
                 if (TryGetDateTime(value, out var dateValue))
                 {
                     return JsonValue.Create(dateValue.ToString(pattern, CultureInfo.InvariantCulture))!;
@@ -752,6 +791,19 @@ internal static class ExpressionEvaluator
         }
 
         return JsonValue.Create(ToText(value))!;
+    }
+
+    private static string EnsureSuffixPattern(string pattern, string suffix)
+    {
+        var trimmedPattern = pattern.Trim();
+        if (trimmedPattern.Length == 0)
+        {
+            return suffix;
+        }
+
+        return trimmedPattern.IndexOf(suffix, StringComparison.Ordinal) >= 0
+            ? trimmedPattern
+            : trimmedPattern + suffix;
     }
 
     private static int Count(JToken? value)

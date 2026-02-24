@@ -1,0 +1,14 @@
+{
+  "flags": {
+    "includeRates": true
+  },
+  "metrics": {
+    "growthRate": 0.0123,
+    "badDebtRate": 0.0045
+  },
+  "institutions": [
+    { "name": "机构A" },
+    { "name": "机构B" },
+    { "name": "机构C" }
+  ]
+}

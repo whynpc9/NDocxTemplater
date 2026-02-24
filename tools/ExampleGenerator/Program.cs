@@ -255,6 +255,35 @@ GenerateExample(
     Paragraph("前10名机构中，第3名为{institutions|sort:revenue:desc|take:10|nth:3|get:name}，收入为{institutions|sort:revenue:desc|take:10|nth:3|get:revenue|format:number:#,##0}元。"),
     Paragraph("前10名末位为{institutions|sort:revenue:desc|take:10|at:-1|get:name}（支持负数索引）。"));
 
+GenerateExample(
+    examplesRoot,
+    "10-inline-conditions-and-rates",
+    """
+    {
+      "flags": {
+        "includeRates": true
+      },
+      "metrics": {
+        "growthRate": 0.0123,
+        "badDebtRate": 0.0045
+      },
+      "institutions": [
+        { "name": "机构A" },
+        { "name": "机构B" },
+        { "name": "机构C" }
+      ]
+    }
+    """,
+    """
+    using NDocxTemplater;
+
+    var engine = new DocxTemplateEngine();
+    var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+    File.WriteAllBytes("output.docx", output);
+    """,
+    Paragraph("本次样本共{institutions|count}家机构，状态：{flags.includeRates|if:包含比率指标:不包含比率指标}，环比增长率{metrics.growthRate|format:percent:0.00}，坏账率{metrics.badDebtRate|format:permille:0.00}。"),
+    Paragraph("备用写法（number pattern）：{metrics.growthRate|format:number:0.00%} / {metrics.badDebtRate|format:number:0.00‰}"));
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;

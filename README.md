@@ -24,14 +24,19 @@
 - 表达式扩展（管道语法）
   - 排序：`|sort:key:asc` 或 `|sort:key:desc`
   - 截断：`|take:10`
-  - 计数：`|count`
+  - 计数（可直接用于 inline 文本）：`|count`
   - inline 友好聚合/取值：
     - 首项/末项：`|first`、`|last`
     - 位次取项：`|nth:N`（1-based，如第3名）、`|at:index`（0-based，支持负数如 `-1`）
     - 按字段取最大/最小项：`|maxby:key`、`|minby:key`
     - 从当前值继续取字段：`|get:path`（别名：`|pick:path`）
+  - inline 条件分支：
+    - `|if:trueText:falseText`
+    - `|if:trueText`（false 时输出空字符串）
   - 格式化：
     - 数值：`|format:number:0.00`
+    - 百分比（原始值为小数）：`|format:percent:0.00` -> `1.23%`
+    - 千分比（原始值为小数）：`|format:permille:0.00` -> `12.30‰`
     - 日期：`|format:date:yyyy-MM-dd`
 
 ## 模板语法示例
@@ -69,7 +74,15 @@ VIP 客户
 前10名机构中，第3名为{institutions|sort:revenue:desc|take:10|nth:3|get:name}，
 收入为{institutions|sort:revenue:desc|take:10|nth:3|get:revenue|format:number:#,##0}元，
 前10名末位为{institutions|sort:revenue:desc|take:10|at:-1|get:name}
+
+本次样本共{institutions|count}家机构，状态：{flags.includeRates|if:包含比率指标:不包含比率指标}，
+环比增长率{metrics.growthRate|format:percent:0.00}，
+坏账率{metrics.badDebtRate|format:permille:0.00}
 ```
+
+说明：
+- `|count` 已支持 inline 文本（例如 `共有{items|count}项`）
+- `|format:number:0.00%` / `|format:number:0.00‰` 也仍然可用；`percent/permille` 只是更直观的别名
 
 ## 快速使用
 
@@ -117,6 +130,7 @@ examples/
   07-table-date-format-split-runs/
   08-inline-friendly-expressions/
   09-inline-ranking-positions/
+  10-inline-conditions-and-rates/
 ```
 
 各示例说明：
@@ -130,6 +144,7 @@ examples/
 - `07-table-date-format-split-runs`：表格单元格内被拆分 Run 的日期格式表达式渲染
 - `08-inline-friendly-expressions`：面向正文段落的 inline 聚合/取值表达式（区间、最大/最小值）
 - `09-inline-ranking-positions`：面向“前 N 名中的第 K 名”场景的位次表达式（`nth/at`）
+- `10-inline-conditions-and-rates`：inline 条件分支、计数，以及百分比/千分比格式化
 
 如需重新生成示例资产：
 
@@ -143,7 +158,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、inline 聚合/位次表达式、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 
