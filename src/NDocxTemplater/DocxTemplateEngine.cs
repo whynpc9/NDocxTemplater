@@ -476,6 +476,10 @@ internal static class ExpressionEvaluator
                 return ApplyFirst(value);
             case "last":
                 return ApplyLast(value);
+            case "nth":
+                return ApplyNth(value, parts);
+            case "at":
+                return ApplyAt(value, parts);
             case "get":
             case "pick":
                 return ApplyGet(value, parts);
@@ -585,6 +589,57 @@ internal static class ExpressionEvaluator
         }
 
         return JsonNodeHelpers.DeepClone(array[array.Count - 1]);
+    }
+
+    private static JToken? ApplyNth(JToken? value, IReadOnlyList<string> parts)
+    {
+        if (!(value is JArray))
+        {
+            return value;
+        }
+
+        if (parts.Count < 2 || !int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rank))
+        {
+            throw new InvalidOperationException("nth operation requires integer rank (1-based): nth:N.");
+        }
+
+        if (rank <= 0)
+        {
+            throw new InvalidOperationException("nth operation rank must be greater than zero: nth:N.");
+        }
+
+        return ApplyArrayIndex(value, rank - 1);
+    }
+
+    private static JToken? ApplyAt(JToken? value, IReadOnlyList<string> parts)
+    {
+        if (!(value is JArray))
+        {
+            return value;
+        }
+
+        if (parts.Count < 2 || !int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
+        {
+            throw new InvalidOperationException("at operation requires integer index (0-based): at:index.");
+        }
+
+        return ApplyArrayIndex(value, index);
+    }
+
+    private static JToken? ApplyArrayIndex(JToken? value, int index)
+    {
+        if (!(value is JArray array))
+        {
+            return value;
+        }
+
+        var normalizedIndex = index < 0 ? array.Count + index : index;
+        if (normalizedIndex < 0 || normalizedIndex >= array.Count)
+        {
+            return null;
+        }
+
+        return JsonNodeHelpers.DeepClone(array[normalizedIndex]);
     }
 
     private static JToken? ApplyGet(JToken? value, IReadOnlyList<string> parts)

@@ -1,0 +1,15 @@
+{
+  "institutions": [
+    { "name": "机构A", "revenue": 1000000 },
+    { "name": "机构B", "revenue": 920000 },
+    { "name": "机构C", "revenue": 880000 },
+    { "name": "机构D", "revenue": 860000 },
+    { "name": "机构E", "revenue": 840000 },
+    { "name": "机构F", "revenue": 820000 },
+    { "name": "机构G", "revenue": 800000 },
+    { "name": "机构H", "revenue": 780000 },
+    { "name": "机构I", "revenue": 760000 },
+    { "name": "机构J", "revenue": 740000 },
+    { "name": "机构K", "revenue": 100000 }
+  ]
+}

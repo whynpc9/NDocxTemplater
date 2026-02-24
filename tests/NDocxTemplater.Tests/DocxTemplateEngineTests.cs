@@ -179,6 +179,36 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_SupportsNthAndAtExpressions_ForRankedInlineNarrative()
+    {
+        var template = CreateTemplate(
+            Paragraph(
+                "前10名机构中，第3名为{institutions|sort:revenue:desc|take:10|nth:3|get:name}，收入为{institutions|sort:revenue:desc|take:10|nth:3|get:revenue|format:number:#,##0}元；前10名末位为{institutions|sort:revenue:desc|take:10|at:-1|get:name}。"));
+
+        const string json = @"{
+  ""institutions"": [
+    { ""name"": ""机构A"", ""revenue"": 1000000 },
+    { ""name"": ""机构B"", ""revenue"": 920000 },
+    { ""name"": ""机构C"", ""revenue"": 880000 },
+    { ""name"": ""机构D"", ""revenue"": 860000 },
+    { ""name"": ""机构E"", ""revenue"": 840000 },
+    { ""name"": ""机构F"", ""revenue"": 820000 },
+    { ""name"": ""机构G"", ""revenue"": 800000 },
+    { ""name"": ""机构H"", ""revenue"": 780000 },
+    { ""name"": ""机构I"", ""revenue"": 760000 },
+    { ""name"": ""机构J"", ""revenue"": 740000 },
+    { ""name"": ""机构K"", ""revenue"": 100000 }
+  ]
+}";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json));
+
+        Assert.Contains(
+            "前10名机构中，第3名为机构C，收入为880,000元；前10名末位为机构J。",
+            lines);
+    }
+
+    [Fact]
     public void Render_RendersInlineImageTag_FromDataUri()
     {
         var template = CreateTemplate(

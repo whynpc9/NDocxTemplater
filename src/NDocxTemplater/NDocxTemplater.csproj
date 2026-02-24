@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <PackageId>NDocxTemplater</PackageId>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Title>NDocxTemplater</Title>
     <Description>A .NET DOCX templating engine inspired by docxtemplater, supporting tags, conditions, loops, tables, and images from JSON data.</Description>
     <Authors>Wang Hongyi</Authors>

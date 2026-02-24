@@ -27,6 +27,7 @@
   - 计数：`|count`
   - inline 友好聚合/取值：
     - 首项/末项：`|first`、`|last`
+    - 位次取项：`|nth:N`（1-based，如第3名）、`|at:index`（0-based，支持负数如 `-1`）
     - 按字段取最大/最小项：`|maxby:key`、`|minby:key`
     - 从当前值继续取字段：`|get:path`（别名：`|pick:path`）
   - 格式化：
@@ -64,6 +65,10 @@ VIP 客户
 收入为{institutions|maxby:revenue|get:revenue|format:number:#,##0}元，
 营收最低的为{institutions|minby:revenue|get:name}，
 收入为{institutions|minby:revenue|get:revenue|format:number:#,##0}元
+
+前10名机构中，第3名为{institutions|sort:revenue:desc|take:10|nth:3|get:name}，
+收入为{institutions|sort:revenue:desc|take:10|nth:3|get:revenue|format:number:#,##0}元，
+前10名末位为{institutions|sort:revenue:desc|take:10|at:-1|get:name}
 ```
 
 ## 快速使用
@@ -111,6 +116,7 @@ examples/
   06-images/
   07-table-date-format-split-runs/
   08-inline-friendly-expressions/
+  09-inline-ranking-positions/
 ```
 
 各示例说明：
@@ -123,6 +129,7 @@ examples/
 - `06-images`：图片标签（inline/block）和循环中的图片渲染
 - `07-table-date-format-split-runs`：表格单元格内被拆分 Run 的日期格式表达式渲染
 - `08-inline-friendly-expressions`：面向正文段落的 inline 聚合/取值表达式（区间、最大/最小值）
+- `09-inline-ranking-positions`：面向“前 N 名中的第 K 名”场景的位次表达式（`nth/at`）
 
 如需重新生成示例资产：
 
@@ -136,7 +143,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、inline 聚合表达式、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、inline 聚合/位次表达式、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 
