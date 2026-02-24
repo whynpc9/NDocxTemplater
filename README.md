@@ -25,6 +25,10 @@
   - 排序：`|sort:key:asc` 或 `|sort:key:desc`
   - 截断：`|take:10`
   - 计数：`|count`
+  - inline 友好聚合/取值：
+    - 首项/末项：`|first`、`|last`
+    - 按字段取最大/最小项：`|maxby:key`、`|minby:key`
+    - 从当前值继续取字段：`|get:path`（别名：`|pick:path`）
   - 格式化：
     - 数值：`|format:number:0.00`
     - 日期：`|format:date:yyyy-MM-dd`
@@ -44,6 +48,22 @@ VIP 客户
 
 {%logo}
 {%%cover}
+```
+
+## Inline 文本段落友好写法
+
+在报告正文段落里，通常希望用单行模板直接表达“区间 + 最大值/最小值”这类语句。可以组合 `sort/first/last/maxby/minby/get/format` 来完成，而不需要额外的块标签换行。
+
+```text
+统计数据包括了从{financeMonthly|sort:month:asc|first|get:month|format:date:yyyy年M月}
+到{financeMonthly|sort:month:asc|last|get:month|format:date:yyyy年M月}的财务数据，
+其中营收最高的是{financeMonthly|maxby:revenue|get:month|format:date:M月}，
+营收为{financeMonthly|maxby:revenue|get:revenue|format:number:#,##0}元
+
+在这些机构的对比数据中，其中营收最高的为{institutions|maxby:revenue|get:name}，
+收入为{institutions|maxby:revenue|get:revenue|format:number:#,##0}元，
+营收最低的为{institutions|minby:revenue|get:name}，
+收入为{institutions|minby:revenue|get:revenue|format:number:#,##0}元
 ```
 
 ## 快速使用
@@ -90,6 +110,7 @@ examples/
   05-extensions/
   06-images/
   07-table-date-format-split-runs/
+  08-inline-friendly-expressions/
 ```
 
 各示例说明：
@@ -101,6 +122,7 @@ examples/
 - `05-extensions`：排序/截断/计数/格式化
 - `06-images`：图片标签（inline/block）和循环中的图片渲染
 - `07-table-date-format-split-runs`：表格单元格内被拆分 Run 的日期格式表达式渲染
+- `08-inline-friendly-expressions`：面向正文段落的 inline 聚合/取值表达式（区间、最大/最小值）
 
 如需重新生成示例资产：
 
@@ -114,7 +136,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、inline 聚合表达式、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

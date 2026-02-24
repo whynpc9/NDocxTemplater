@@ -195,6 +195,36 @@ GenerateExample(
             CellWithSplitRuns("{createdAt|for", "mat:date:yyyy-MM-", "dd}")),
         TableRow(Cell("{/rows}"), Cell(string.Empty))));
 
+GenerateExample(
+    examplesRoot,
+    "08-inline-friendly-expressions",
+    """
+    {
+      "financeMonthly": [
+        { "month": "2025-03-01", "revenue": 90000 },
+        { "month": "2025-01-01", "revenue": 70000 },
+        { "month": "2025-07-01", "revenue": 85000 },
+        { "month": "2025-05-01", "revenue": 100000 }
+      ],
+      "institutions": [
+        { "name": "机构C", "revenue": 650000 },
+        { "name": "机构A", "revenue": 1000000 },
+        { "name": "机构Z", "revenue": 100000 }
+      ]
+    }
+    """,
+    """
+    using NDocxTemplater;
+
+    var engine = new DocxTemplateEngine();
+    var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+    File.WriteAllBytes("output.docx", output);
+    """,
+    Paragraph(
+        "统计数据包括了从{financeMonthly|sort:month:asc|first|get:month|format:date:yyyy年M月}到{financeMonthly|sort:month:asc|last|get:month|format:date:yyyy年M月}的财务数据，其中营收最高的是{financeMonthly|maxby:revenue|get:month|format:date:M月}，营收为{financeMonthly|maxby:revenue|get:revenue|format:number:#,##0}元"),
+    Paragraph(
+        "在这些机构的对比数据中，其中营收最高的为{institutions|maxby:revenue|get:name}，收入为{institutions|maxby:revenue|get:revenue|format:number:#,##0}元，营收最低的为{institutions|minby:revenue|get:name}，收入为{institutions|minby:revenue|get:revenue|format:number:#,##0}元"));
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;

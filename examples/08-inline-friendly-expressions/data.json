@@ -1,0 +1,13 @@
+{
+  "financeMonthly": [
+    { "month": "2025-03-01", "revenue": 90000 },
+    { "month": "2025-01-01", "revenue": 70000 },
+    { "month": "2025-07-01", "revenue": 85000 },
+    { "month": "2025-05-01", "revenue": 100000 }
+  ],
+  "institutions": [
+    { "name": "机构C", "revenue": 650000 },
+    { "name": "机构A", "revenue": 1000000 },
+    { "name": "机构Z", "revenue": 100000 }
+  ]
+}

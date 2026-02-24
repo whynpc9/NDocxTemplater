@@ -472,6 +472,17 @@ internal static class ExpressionEvaluator
                 return ApplySort(value, parts);
             case "take":
                 return ApplyTake(value, parts);
+            case "first":
+                return ApplyFirst(value);
+            case "last":
+                return ApplyLast(value);
+            case "get":
+            case "pick":
+                return ApplyGet(value, parts);
+            case "maxby":
+                return ApplyExtremaBy(value, parts, pickMax: true);
+            case "minby":
+                return ApplyExtremaBy(value, parts, pickMax: false);
             case "count":
                 return JsonValue.Create(Count(value));
             case "format":
@@ -544,6 +555,105 @@ internal static class ExpressionEvaluator
         }
 
         return result;
+    }
+
+    private static JToken? ApplyFirst(JToken? value)
+    {
+        if (!(value is JArray array))
+        {
+            return value;
+        }
+
+        if (array.Count == 0)
+        {
+            return null;
+        }
+
+        return JsonNodeHelpers.DeepClone(array[0]);
+    }
+
+    private static JToken? ApplyLast(JToken? value)
+    {
+        if (!(value is JArray array))
+        {
+            return value;
+        }
+
+        if (array.Count == 0)
+        {
+            return null;
+        }
+
+        return JsonNodeHelpers.DeepClone(array[array.Count - 1]);
+    }
+
+    private static JToken? ApplyGet(JToken? value, IReadOnlyList<string> parts)
+    {
+        if (parts.Count < 2)
+        {
+            throw new InvalidOperationException("get operation requires a path: get:path.");
+        }
+
+        var path = string.Join(":", parts.Skip(1)).Trim();
+        if (path.Length == 0 || path == ".")
+        {
+            return value == null ? null : JsonNodeHelpers.DeepClone(value);
+        }
+
+        return JsonNodeHelpers.DeepClone(PathResolver.ResolveFrom(value, path));
+    }
+
+    private static JToken? ApplyExtremaBy(JToken? value, IReadOnlyList<string> parts, bool pickMax)
+    {
+        if (!(value is JArray array))
+        {
+            return value;
+        }
+
+        if (parts.Count < 2)
+        {
+            throw new InvalidOperationException(
+                pickMax
+                    ? "maxby operation requires key path: maxby:key."
+                    : "minby operation requires key path: minby:key.");
+        }
+
+        if (array.Count == 0)
+        {
+            return null;
+        }
+
+        var keyPath = string.Join(":", parts.Skip(1)).Trim();
+        if (keyPath.Length == 0)
+        {
+            throw new InvalidOperationException(
+                pickMax
+                    ? "maxby operation requires key path: maxby:key."
+                    : "minby operation requires key path: minby:key.");
+        }
+
+        JToken? bestItem = null;
+        JToken? bestKey = null;
+
+        foreach (var item in array)
+        {
+            var currentKey = PathResolver.ResolveFrom(item, keyPath);
+            if (bestItem == null)
+            {
+                bestItem = item;
+                bestKey = currentKey;
+                continue;
+            }
+
+            var comparison = CompareTokens(currentKey, bestKey);
+            if ((pickMax && comparison > 0) || (!pickMax && comparison < 0))
+            {
+                bestItem = item;
+                bestKey = currentKey;
+            }
+        }
+
+        return JsonNodeHelpers.DeepClone(bestItem);
     }
 
     private static JToken ApplyFormat(JToken? value, IReadOnlyList<string> parts)

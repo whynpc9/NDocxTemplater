@@ -146,6 +146,39 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_SupportsInlineFriendlyAggregateExpressions_ForNarrativeParagraphs()
+    {
+        var template = CreateTemplate(
+            Paragraph(
+                "统计数据包括了从{financeMonthly|sort:month:asc|first|get:month|format:date:yyyy年M月}到{financeMonthly|sort:month:asc|last|get:month|format:date:yyyy年M月}的财务数据，其中营收最高的是{financeMonthly|maxby:revenue|get:month|format:date:M月}，营收为{financeMonthly|maxby:revenue|get:revenue|format:number:#,##0}元"),
+            Paragraph(
+                "在这些机构的对比数据中，其中营收最高的为{institutions|maxby:revenue|get:name}，收入为{institutions|maxby:revenue|get:revenue|format:number:#,##0}元，营收最低的为{institutions|minby:revenue|get:name}，收入为{institutions|minby:revenue|get:revenue|format:number:#,##0}元"));
+
+        const string json = @"{
+  ""financeMonthly"": [
+    { ""month"": ""2025-03-01"", ""revenue"": 90000 },
+    { ""month"": ""2025-01-01"", ""revenue"": 70000 },
+    { ""month"": ""2025-07-01"", ""revenue"": 85000 },
+    { ""month"": ""2025-05-01"", ""revenue"": 100000 }
+  ],
+  ""institutions"": [
+    { ""name"": ""机构C"", ""revenue"": 650000 },
+    { ""name"": ""机构A"", ""revenue"": 1000000 },
+    { ""name"": ""机构Z"", ""revenue"": 100000 }
+  ]
+}";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json));
+
+        Assert.Contains(
+            "统计数据包括了从2025年1月到2025年7月的财务数据，其中营收最高的是5月，营收为100,000元",
+            lines);
+        Assert.Contains(
+            "在这些机构的对比数据中，其中营收最高的为机构A，收入为1,000,000元，营收最低的为机构Z，收入为100,000元",
+            lines);
+    }
+
+    [Fact]
     public void Render_RendersInlineImageTag_FromDataUri()
     {
         var template = CreateTemplate(
