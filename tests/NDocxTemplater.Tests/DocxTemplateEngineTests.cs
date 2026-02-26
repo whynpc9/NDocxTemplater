@@ -323,6 +323,72 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_RendersRealPngFromFilePathAndDataUri_WithAspectRatioScaling()
+    {
+        var imagePath = GetTestAssetPath("real-chart.png");
+        var imageBytes = File.ReadAllBytes(imagePath);
+        var imageDataUri = "data:image/png;base64," + Convert.ToBase64String(imageBytes);
+
+        var template = CreateTemplate(
+            Paragraph("File path image"),
+            Paragraph("{%fileImage}"),
+            Paragraph("Data URI image"),
+            Paragraph("{%dataUriImage}"),
+            Paragraph("Fit box image"),
+            Paragraph("{%fitBoxImage}"));
+
+        var json = @"{
+  ""fileImage"": {
+    ""src"": """ + EscapeJsonString(imagePath) + @""",
+    ""maxWidth"": 376,
+    ""preserveAspectRatio"": true
+  },
+  ""dataUriImage"": {
+    ""src"": """ + imageDataUri + @""",
+    ""scale"": 0.25,
+    ""preserveAspectRatio"": true
+  },
+  ""fitBoxImage"": {
+    ""src"": """ + EscapeJsonString(imagePath) + @""",
+    ""width"": 420,
+    ""height"": 260,
+    ""preserveAspectRatio"": true
+  }
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var drawings = document.MainDocumentPart!.Document.Body!.Descendants<Drawing>().ToList();
+            Assert.Equal(3, drawings.Count);
+
+            var extents = drawings
+                .Select(static drawing => drawing.Descendants<DW.Extent>().Single())
+                .Select(static extent => (extent.Cx!.Value, extent.Cy!.Value))
+                .ToArray();
+
+            Assert.Equal((376 * 9525L, 339 * 9525L), extents[0]);
+            Assert.Equal((376 * 9525L, 339 * 9525L), extents[1]);
+            Assert.Equal((288 * 9525L, 260 * 9525L), extents[2]);
+
+            var embeddedImages = document.MainDocumentPart.ImageParts
+                .Select(static part =>
+                {
+                    using var imageStream = part.GetStream();
+                    using var copy = new MemoryStream();
+                    imageStream.CopyTo(copy);
+                    return copy.ToArray();
+                })
+                .ToList();
+
+            Assert.Equal(3, embeddedImages.Count);
+            Assert.All(embeddedImages, bytes => Assert.Equal(imageBytes, bytes));
+        }
+    }
+
+    [Fact]
     public void Render_FormatsDateExpressionInTable_WhenTagIsSplitAcrossRuns()
     {
         var template = CreateTemplate(
@@ -429,5 +495,35 @@ public class DocxTemplateEngineTests
                     .ToArray())
                 .ToArray();
         }
+    }
+
+    private static string GetTestAssetPath(string fileName)
+    {
+        var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
+        return Path.Combine(repoRoot, "tests", "NDocxTemplater.Tests", "Assets", fileName);
+    }
+
+    private static string FindRepoRoot(string startPath)
+    {
+        var current = new DirectoryInfo(startPath);
+        while (current != null)
+        {
+            var solutionPath = Path.Combine(current.FullName, "NDocxTemplater.sln");
+            if (File.Exists(solutionPath))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        throw new InvalidOperationException("Cannot locate repository root from runtime path.");
+    }
+
+    private static string EscapeJsonString(string text)
+    {
+        return text
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"");
     }
 }

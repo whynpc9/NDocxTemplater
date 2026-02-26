@@ -199,6 +199,10 @@ internal static class ImageInputResolver
         string? source = null;
         int? width = null;
         int? height = null;
+        int? maxWidth = null;
+        int? maxHeight = null;
+        double? scale = null;
+        bool? preserveAspectRatio = null;
 
         if (JsonNodeHelpers.TryGetString(token, out var stringToken))
         {
@@ -214,6 +218,12 @@ internal static class ImageInputResolver
 
             width = ReadInteger(obj, "width") ?? ReadInteger(obj, "widthPx");
             height = ReadInteger(obj, "height") ?? ReadInteger(obj, "heightPx");
+            maxWidth = ReadInteger(obj, "maxWidth") ?? ReadInteger(obj, "maxWidthPx");
+            maxHeight = ReadInteger(obj, "maxHeight") ?? ReadInteger(obj, "maxHeightPx");
+            scale = ReadDouble(obj, "scale") ?? ReadDouble(obj, "scaleRatio");
+            preserveAspectRatio = ReadBoolean(obj, "preserveAspectRatio")
+                ?? ReadBoolean(obj, "keepAspectRatio")
+                ?? ReadBoolean(obj, "lockAspectRatio");
         }
 
         var sourceText = source?.Trim();
@@ -226,35 +236,16 @@ internal static class ImageInputResolver
         var imagePartType = DetectImagePartType(imageBytes, mimeHint, extensionHint);
 
         var inferredSize = ImageBinaryInspector.TryReadPixelSize(imageBytes);
-        var widthPx = width;
-        var heightPx = height;
+        var resolvedSize = ResolveOutputSize(
+            inferredSize,
+            width,
+            height,
+            maxWidth,
+            maxHeight,
+            scale,
+            preserveAspectRatio);
 
-        if (widthPx == null && inferredSize.HasValue)
-        {
-            widthPx = inferredSize.Value.Width;
-        }
-
-        if (heightPx == null && inferredSize.HasValue)
-        {
-            heightPx = inferredSize.Value.Height;
-        }
-
-        if (widthPx == null)
-        {
-            widthPx = 120;
-        }
-
-        if (heightPx == null)
-        {
-            heightPx = 120;
-        }
-
-        if (widthPx.Value <= 0 || heightPx.Value <= 0)
-        {
-            throw new InvalidOperationException("Image width and height must be greater than zero.");
-        }
-
-        return new ImagePayload(imageBytes, imagePartType, widthPx.Value, heightPx.Value);
+        return new ImagePayload(imageBytes, imagePartType, resolvedSize.Width, resolvedSize.Height);
     }
 
     private static byte[] ParseImageBytes(string source, out string? mimeHint, out string? extensionHint)
@@ -429,6 +420,246 @@ internal static class ImageInputResolver
         }
 
         return null;
+    }
+
+    private static double? ReadDouble(JObject obj, string key)
+    {
+        foreach (var pair in obj)
+        {
+            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var token = pair.Value;
+            if (JsonNodeHelpers.IsNull(token))
+            {
+                return null;
+            }
+
+            if (token is JsonValue jsonValue)
+            {
+                try
+                {
+                    return jsonValue.GetValue<double>();
+                }
+                catch
+                {
+                }
+            }
+
+            if (double.TryParse(token!.ToJsonString().Trim('\"'), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+            {
+                return value;
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
+    private static bool? ReadBoolean(JObject obj, string key)
+    {
+        foreach (var pair in obj)
+        {
+            if (!string.Equals(pair.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var token = pair.Value;
+            if (JsonNodeHelpers.IsNull(token))
+            {
+                return null;
+            }
+
+            if (token is JsonValue jsonValue)
+            {
+                try
+                {
+                    return jsonValue.GetValue<bool>();
+                }
+                catch
+                {
+                }
+            }
+
+            if (bool.TryParse(token!.ToJsonString().Trim('\"'), out var value))
+            {
+                return value;
+            }
+
+            return null;
+        }
+
+        return null;
+    }
+
+    private static ImageSize ResolveOutputSize(
+        ImageSize? inferredSize,
+        int? width,
+        int? height,
+        int? maxWidth,
+        int? maxHeight,
+        double? scale,
+        bool? preserveAspectRatio)
+    {
+        if (width.HasValue && width.Value <= 0)
+        {
+            throw new InvalidOperationException("Image width must be greater than zero.");
+        }
+
+        if (height.HasValue && height.Value <= 0)
+        {
+            throw new InvalidOperationException("Image height must be greater than zero.");
+        }
+
+        if (maxWidth.HasValue && maxWidth.Value <= 0)
+        {
+            throw new InvalidOperationException("Image maxWidth must be greater than zero.");
+        }
+
+        if (maxHeight.HasValue && maxHeight.Value <= 0)
+        {
+            throw new InvalidOperationException("Image maxHeight must be greater than zero.");
+        }
+
+        if (scale.HasValue && scale.Value <= 0d)
+        {
+            throw new InvalidOperationException("Image scale must be greater than zero.");
+        }
+
+        var hasScaleConstraints = scale.HasValue || maxWidth.HasValue || maxHeight.HasValue;
+        var hasOneDimensionOnly = width.HasValue ^ height.HasValue;
+        var keepAspect = preserveAspectRatio ?? hasScaleConstraints || hasOneDimensionOnly;
+
+        var originalWidth = inferredSize?.Width;
+        var originalHeight = inferredSize?.Height;
+
+        int targetWidth;
+        int targetHeight;
+
+        if (width.HasValue && height.HasValue)
+        {
+            if (keepAspect && originalWidth.HasValue && originalHeight.HasValue)
+            {
+                (targetWidth, targetHeight) = FitIntoBox(originalWidth.Value, originalHeight.Value, width.Value, height.Value, allowUpscale: true);
+            }
+            else
+            {
+                targetWidth = width.Value;
+                targetHeight = height.Value;
+            }
+        }
+        else if (width.HasValue)
+        {
+            targetWidth = width.Value;
+            if (keepAspect && originalWidth.HasValue && originalHeight.HasValue)
+            {
+                targetHeight = ScaleDimension(originalHeight.Value, width.Value / (double)originalWidth.Value);
+            }
+            else
+            {
+                targetHeight = originalHeight ?? 120;
+            }
+        }
+        else if (height.HasValue)
+        {
+            targetHeight = height.Value;
+            if (keepAspect && originalWidth.HasValue && originalHeight.HasValue)
+            {
+                targetWidth = ScaleDimension(originalWidth.Value, height.Value / (double)originalHeight.Value);
+            }
+            else
+            {
+                targetWidth = originalWidth ?? 120;
+            }
+        }
+        else if (originalWidth.HasValue && originalHeight.HasValue)
+        {
+            targetWidth = originalWidth.Value;
+            targetHeight = originalHeight.Value;
+        }
+        else
+        {
+            targetWidth = 120;
+            targetHeight = 120;
+        }
+
+        if (scale.HasValue)
+        {
+            targetWidth = ScaleDimension(targetWidth, scale.Value);
+            targetHeight = ScaleDimension(targetHeight, scale.Value);
+        }
+
+        if (maxWidth.HasValue || maxHeight.HasValue)
+        {
+            if (keepAspect)
+            {
+                var fitWidth = maxWidth ?? int.MaxValue;
+                var fitHeight = maxHeight ?? int.MaxValue;
+                (targetWidth, targetHeight) = FitIntoBox(targetWidth, targetHeight, fitWidth, fitHeight, allowUpscale: false);
+            }
+            else
+            {
+                if (maxWidth.HasValue && targetWidth > maxWidth.Value)
+                {
+                    targetWidth = maxWidth.Value;
+                }
+
+                if (maxHeight.HasValue && targetHeight > maxHeight.Value)
+                {
+                    targetHeight = maxHeight.Value;
+                }
+            }
+        }
+
+        if (targetWidth <= 0 || targetHeight <= 0)
+        {
+            throw new InvalidOperationException("Resolved image width and height must be greater than zero.");
+        }
+
+        return new ImageSize(targetWidth, targetHeight);
+    }
+
+    private static (int Width, int Height) FitIntoBox(int sourceWidth, int sourceHeight, int boxWidth, int boxHeight, bool allowUpscale)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0)
+        {
+            throw new InvalidOperationException("Source image dimensions must be greater than zero.");
+        }
+
+        if (boxWidth <= 0 || boxHeight <= 0)
+        {
+            throw new InvalidOperationException("Image fit box dimensions must be greater than zero.");
+        }
+
+        var ratioX = boxWidth / (double)sourceWidth;
+        var ratioY = boxHeight / (double)sourceHeight;
+        var ratio = Math.Min(ratioX, ratioY);
+        if (!allowUpscale)
+        {
+            ratio = Math.Min(ratio, 1d);
+        }
+
+        return (ScaleDimension(sourceWidth, ratio), ScaleDimension(sourceHeight, ratio));
+    }
+
+    private static int ScaleDimension(int value, double scale)
+    {
+        if (value <= 0)
+        {
+            throw new InvalidOperationException("Image dimension must be greater than zero.");
+        }
+
+        if (scale <= 0d)
+        {
+            throw new InvalidOperationException("Image scale factor must be greater than zero.");
+        }
+
+        var scaled = (int)Math.Round(value * scale, MidpointRounding.AwayFromZero);
+        return scaled <= 0 ? 1 : scaled;
     }
 }
 

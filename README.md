@@ -20,6 +20,11 @@
   - inline：`{%imagePath}`
   - block/居中：`{%%imagePath}`
   - 数据支持：base64 data URI、base64 字符串、文件路径
+  - 支持缩放参数（图片数据对象）：
+    - `width` / `height`：目标尺寸（像素）
+    - `maxWidth` / `maxHeight`：最大边界（像素）
+    - `scale`：缩放倍率（如 `0.25`）
+    - `preserveAspectRatio`（或 `keepAspectRatio`）：是否保持宽高比，避免拉伸变形
   - 当前约束：图片标签需独占一个段落（单独一行）
 - 表达式扩展（管道语法）
   - 排序：`|sort:key:asc` 或 `|sort:key:desc`
@@ -54,6 +59,23 @@ VIP 客户
 
 {%logo}
 {%%cover}
+```
+
+图片数据对象示例（路径 / data URI + 等比缩放）：
+
+```json
+{
+  "fromPath": {
+    "src": "chart.png",
+    "maxWidth": 376,
+    "preserveAspectRatio": true
+  },
+  "fromDataUri": {
+    "src": "data:image/png;base64,...",
+    "scale": 0.25,
+    "preserveAspectRatio": true
+  }
+}
 ```
 
 ## Inline 文本段落友好写法
@@ -110,7 +132,7 @@ File.WriteAllBytes("output.docx", outputBytes);
 
 ## Examples
 
-`examples` 下每个子目录都是一个独立用例，均包含：
+`examples` 下每个子目录都是一个独立用例，至少包含：
 
 - `template.docx`：模板文件
 - `data.json`：输入数据
@@ -131,6 +153,7 @@ examples/
   08-inline-friendly-expressions/
   09-inline-ranking-positions/
   10-inline-conditions-and-rates/
+  11-images-file-and-datauri-scaling/
 ```
 
 各示例说明：
@@ -145,6 +168,8 @@ examples/
 - `08-inline-friendly-expressions`：面向正文段落的 inline 聚合/取值表达式（区间、最大/最小值）
 - `09-inline-ranking-positions`：面向“前 N 名中的第 K 名”场景的位次表达式（`nth/at`）
 - `10-inline-conditions-and-rates`：inline 条件分支、计数，以及百分比/千分比格式化
+- `11-images-file-and-datauri-scaling`：使用真实 PNG 验证文件路径 / data URI 图片插入，以及缩放与等比适配
+  - 该示例额外包含 `chart.png`（用于文件路径模式）
 
 如需重新生成示例资产：
 
@@ -158,7 +183,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

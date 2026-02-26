@@ -10,6 +10,7 @@ var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
 var examplesRoot = Path.Combine(repoRoot, "examples");
 Directory.CreateDirectory(examplesRoot);
 const string TinyPngDataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8B9pYAAAAASUVORK5CYII=";
+var realChartAssetPath = Path.Combine(repoRoot, "tests", "NDocxTemplater.Tests", "Assets", "real-chart.png");
 
 var engine = new DocxTemplateEngine();
 
@@ -284,6 +285,8 @@ GenerateExample(
     Paragraph("本次样本共{institutions|count}家机构，状态：{flags.includeRates|if:包含比率指标:不包含比率指标}，环比增长率{metrics.growthRate|format:percent:0.00}，坏账率{metrics.badDebtRate|format:permille:0.00}。"),
     Paragraph("备用写法（number pattern）：{metrics.growthRate|format:number:0.00%} / {metrics.badDebtRate|format:number:0.00‰}"));
 
+GenerateImagePathAndDataUriScalingExample(examplesRoot, realChartAssetPath);
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;
@@ -327,8 +330,73 @@ static void GenerateExample(
     File.WriteAllBytes(templatePath, templateBytes);
 
     var engine = new DocxTemplateEngine();
-    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    var originalCurrentDirectory = Environment.CurrentDirectory;
+    Environment.CurrentDirectory = dir;
+    byte[] outputBytes;
+    try
+    {
+        outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    }
+    finally
+    {
+        Environment.CurrentDirectory = originalCurrentDirectory;
+    }
+
     File.WriteAllBytes(outputPath, outputBytes);
+}
+
+static void GenerateImagePathAndDataUriScalingExample(string examplesRoot, string imageAssetPath)
+{
+    if (!File.Exists(imageAssetPath))
+    {
+        throw new FileNotFoundException("Missing real image asset for examples.", imageAssetPath);
+    }
+
+    var imageBytes = File.ReadAllBytes(imageAssetPath);
+    var imageDataUri = "data:image/png;base64," + Convert.ToBase64String(imageBytes);
+
+    var dir = Path.Combine(examplesRoot, "11-images-file-and-datauri-scaling");
+    Directory.CreateDirectory(dir);
+
+    var exampleImagePath = Path.Combine(dir, "chart.png");
+    File.Copy(imageAssetPath, exampleImagePath, overwrite: true);
+
+    GenerateExample(
+        examplesRoot,
+        "11-images-file-and-datauri-scaling",
+        """
+        {
+          "fromPath": {
+            "src": "chart.png",
+            "maxWidth": 376,
+            "preserveAspectRatio": true
+          },
+          "fromDataUri": {
+            "src": "__REAL_CHART_DATA_URI__",
+            "scale": 0.25,
+            "preserveAspectRatio": true
+          },
+          "fitInBox": {
+            "src": "chart.png",
+            "width": 420,
+            "height": 260,
+            "preserveAspectRatio": true
+          }
+        }
+        """.Replace("__REAL_CHART_DATA_URI__", imageDataUri),
+        """
+        using NDocxTemplater;
+
+        var engine = new DocxTemplateEngine();
+        var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+        File.WriteAllBytes("output.docx", output);
+        """,
+        Paragraph("图片（文件路径 + maxWidth 等比缩放）"),
+        Paragraph("{%%fromPath}"),
+        Paragraph("图片（data URI + scale 等比缩放）"),
+        Paragraph("{%%fromDataUri}"),
+        Paragraph("图片（在固定宽高盒子中等比缩放，不拉伸变形）"),
+        Paragraph("{%%fitInBox}"));
 }
 
 static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
