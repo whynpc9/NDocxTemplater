@@ -35,6 +35,7 @@
     - `width` / `height`：输出尺寸（像素）
     - `margin`：条码边距（像素）
     - `pure`：是否仅输出条码图形（`true/false`）
+  - 实现基于 `NetBarcode`（`netstandard2.0` 资产），避免运行时加载 `PresentationCore` 的问题
 - 表达式扩展（管道语法）
   - 排序：`|sort:key:asc` 或 `|sort:key:desc`
   - 截断：`|take:10`

@@ -449,6 +449,39 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_GeneratesUpcAAndItfBarcodes()
+    {
+        var template = CreateTemplate(
+            Paragraph("{%barcode:barcodes.upca;type=upca;width=300;height=90}"),
+            Paragraph("{%barcode:barcodes.itf;type=itf;width=300;height=90}"));
+
+        const string json = @"{
+  ""barcodes"": {
+    ""upca"": ""036000291452"",
+    ""itf"": ""12345670""
+  }
+}";
+
+        var output = _engine.Render(template, json);
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var imageBytes = document.MainDocumentPart!.ImageParts
+                .Select(static part =>
+                {
+                    using var imageStream = part.GetStream();
+                    using var copy = new MemoryStream();
+                    imageStream.CopyTo(copy);
+                    return copy.ToArray();
+                })
+                .ToArray();
+
+            Assert.Equal(2, imageBytes.Length);
+            Assert.All(imageBytes, bytes => Assert.True(ContainsDarkPixels(bytes)));
+        }
+    }
+
+    [Fact]
     public void Render_FormatsDateExpressionInTable_WhenTagIsSplitAcrossRuns()
     {
         var template = CreateTemplate(

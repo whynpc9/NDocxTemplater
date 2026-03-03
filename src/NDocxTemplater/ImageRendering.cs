@@ -13,10 +13,9 @@ using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 using JArray = System.Text.Json.Nodes.JsonArray;
 using JObject = System.Text.Json.Nodes.JsonObject;
 using JToken = System.Text.Json.Nodes.JsonNode;
+using NetBarcode;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
-using ZXing;
-using ZXing.Common;
 
 namespace NDocxTemplater;
 
@@ -867,6 +866,8 @@ internal static class BarcodeTemplateRenderer
     private const int DefaultHeight = 96;
     private const int DefaultMargin = 2;
     private const bool DefaultPureBarcode = true;
+    private const int ItfNarrowUnits = 1;
+    private const int ItfWideUnits = 3;
 
     public static IEnumerable<ImagePayload> ResolveMany(BarcodeTemplate template, TemplateContext context)
     {
@@ -895,57 +896,235 @@ internal static class BarcodeTemplateRenderer
             throw new InvalidOperationException("Barcode value cannot be empty.");
         }
 
-        var format = MapBarcodeFormat(template.Type);
         var width = template.Width ?? DefaultWidth;
         var height = template.Height ?? DefaultHeight;
         var margin = template.Margin ?? DefaultMargin;
         var pureBarcode = template.PureBarcode ?? DefaultPureBarcode;
 
-        var writer = new BarcodeWriterPixelData
+        if (width <= 0 || height <= 0 || margin < 0)
         {
-            Format = format,
-            Options = new EncodingOptions
-            {
-                Width = width,
-                Height = height,
-                Margin = margin,
-                PureBarcode = pureBarcode
-            }
-        };
-
-        var pixelData = writer.Write(rawValue);
-
-        using (var image = Image.LoadPixelData<Bgra32>(pixelData.Pixels, pixelData.Width, pixelData.Height))
-        using (var buffer = new MemoryStream())
-        {
-            image.SaveAsPng(buffer);
-            return new ImagePayload(buffer.ToArray(), ImagePartType.Png, pixelData.Width, pixelData.Height);
+            throw new InvalidOperationException("Barcode width/height must be greater than zero and margin must be non-negative.");
         }
+
+        if (template.Type == BarcodeType.Itf)
+        {
+            var bytes = RenderItfBarcode(rawValue, width, height, margin);
+            return new ImagePayload(bytes, ImagePartType.Png, width, height);
+        }
+
+        var (mappedType, encodedValue) = MapBarcodeType(template.Type, rawValue);
+        var showLabel = !pureBarcode;
+        var innerWidth = Math.Max(1, width - (2 * margin));
+        var innerHeight = Math.Max(1, height - (2 * margin));
+
+        var barcode = new Barcode(encodedValue, mappedType, showLabel, innerWidth, innerHeight);
+        var innerBytes = barcode.GetByteArray();
+        if (margin == 0)
+        {
+            using (var image = Image.Load<Rgba32>(innerBytes))
+            {
+                return new ImagePayload(innerBytes, ImagePartType.Png, image.Width, image.Height);
+            }
+        }
+
+        var paddedBytes = PadPng(innerBytes, width, height, margin);
+        return new ImagePayload(paddedBytes, ImagePartType.Png, width, height);
     }
 
-    private static BarcodeFormat MapBarcodeFormat(BarcodeType type)
+    private static (NetBarcode.Type Type, string Value) MapBarcodeType(BarcodeType type, string rawValue)
     {
         switch (type)
         {
             case BarcodeType.Code128:
-                return BarcodeFormat.CODE_128;
+                return (NetBarcode.Type.Code128, rawValue);
             case BarcodeType.Code39:
-                return BarcodeFormat.CODE_39;
+                return (NetBarcode.Type.Code39, rawValue);
             case BarcodeType.Code93:
-                return BarcodeFormat.CODE_93;
+                return (NetBarcode.Type.Code93, rawValue);
             case BarcodeType.Codabar:
-                return BarcodeFormat.CODABAR;
+                return (NetBarcode.Type.Codabar, rawValue);
             case BarcodeType.Ean13:
-                return BarcodeFormat.EAN_13;
+                return (NetBarcode.Type.EAN13, rawValue);
             case BarcodeType.Ean8:
-                return BarcodeFormat.EAN_8;
+                return (NetBarcode.Type.EAN8, rawValue);
             case BarcodeType.UpcA:
-                return BarcodeFormat.UPC_A;
-            case BarcodeType.Itf:
-                return BarcodeFormat.ITF;
+                return (NetBarcode.Type.EAN13, ConvertUpcAToEan13(rawValue));
             default:
-                throw new InvalidOperationException("Unsupported barcode type.");
+                throw new InvalidOperationException(
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Unsupported barcode type '{0}' for NetBarcode renderer.",
+                        type));
         }
+    }
+
+    private static string ConvertUpcAToEan13(string rawValue)
+    {
+        var digits = new string(rawValue.Where(char.IsDigit).ToArray());
+        if (digits.Length == 11)
+        {
+            digits += CalculateUpcACheckDigit(digits).ToString(CultureInfo.InvariantCulture);
+        }
+
+        if (digits.Length != 12)
+        {
+            throw new InvalidOperationException("UPC-A value must contain 11 or 12 digits.");
+        }
+
+        return "0" + digits;
+    }
+
+    private static int CalculateUpcACheckDigit(string digits11)
+    {
+        var oddSum = 0;
+        var evenSum = 0;
+
+        for (var i = 0; i < digits11.Length; i++)
+        {
+            var digit = digits11[i] - '0';
+            if (i % 2 == 0)
+            {
+                oddSum += digit;
+            }
+            else
+            {
+                evenSum += digit;
+            }
+        }
+
+        var total = (oddSum * 3) + evenSum;
+        return (10 - (total % 10)) % 10;
+    }
+
+    private static byte[] PadPng(byte[] sourceBytes, int targetWidth, int targetHeight, int margin)
+    {
+        using (var source = Image.Load<Rgba32>(sourceBytes))
+        using (var canvas = new Image<Rgba32>(targetWidth, targetHeight, new Rgba32(255, 255, 255, 255)))
+        {
+            var offsetX = Math.Max(0, Math.Min(margin, targetWidth - 1));
+            var offsetY = Math.Max(0, Math.Min(margin, targetHeight - 1));
+            var copyWidth = Math.Min(source.Width, targetWidth - offsetX);
+            var copyHeight = Math.Min(source.Height, targetHeight - offsetY);
+
+            for (var y = 0; y < copyHeight; y++)
+            {
+                for (var x = 0; x < copyWidth; x++)
+                {
+                    canvas[x + offsetX, y + offsetY] = source[x, y];
+                }
+            }
+
+            using (var output = new MemoryStream())
+            {
+                canvas.SaveAsPng(output);
+                return output.ToArray();
+            }
+        }
+    }
+
+    private static byte[] RenderItfBarcode(string rawValue, int width, int height, int margin)
+    {
+        var digits = new string(rawValue.Where(char.IsDigit).ToArray());
+        if (digits.Length == 0)
+        {
+            throw new InvalidOperationException("ITF barcode value must contain digits.");
+        }
+
+        if ((digits.Length % 2) != 0)
+        {
+            digits = "0" + digits;
+        }
+
+        var patternUnits = BuildItfPattern(digits);
+        var innerWidth = Math.Max(1, width - (2 * margin));
+        var innerHeight = Math.Max(1, height - (2 * margin));
+        var totalUnits = patternUnits.Sum(static p => p.Units);
+        if (totalUnits <= 0)
+        {
+            throw new InvalidOperationException("Failed to build ITF barcode pattern.");
+        }
+
+        using (var image = new Image<Rgba32>(width, height, new Rgba32(255, 255, 255, 255)))
+        {
+            var unitWidth = innerWidth / (double)totalUnits;
+            var currentUnits = 0;
+
+            foreach (var pattern in patternUnits)
+            {
+                var nextUnits = currentUnits + pattern.Units;
+                var startX = margin + (int)Math.Round(currentUnits * unitWidth, MidpointRounding.AwayFromZero);
+                var endXExclusive = margin + (int)Math.Round(nextUnits * unitWidth, MidpointRounding.AwayFromZero);
+                currentUnits = nextUnits;
+
+                if (!pattern.IsBar)
+                {
+                    continue;
+                }
+
+                if (endXExclusive <= startX)
+                {
+                    endXExclusive = startX + 1;
+                }
+
+                endXExclusive = Math.Min(endXExclusive, width);
+                for (var x = Math.Max(0, startX); x < endXExclusive; x++)
+                {
+                    for (var y = margin; y < margin + innerHeight && y < height; y++)
+                    {
+                        image[x, y] = new Rgba32(0, 0, 0, 255);
+                    }
+                }
+            }
+
+            using (var output = new MemoryStream())
+            {
+                image.SaveAsPng(output);
+                return output.ToArray();
+            }
+        }
+    }
+
+    private static List<ItfPatternSegment> BuildItfPattern(string digits)
+    {
+        var encodings = new Dictionary<char, string>
+        {
+            ['0'] = "nnwwn",
+            ['1'] = "wnnnw",
+            ['2'] = "nwnnw",
+            ['3'] = "wwnnn",
+            ['4'] = "nnwnw",
+            ['5'] = "wnwnn",
+            ['6'] = "nwwnn",
+            ['7'] = "nnnww",
+            ['8'] = "wnnwn",
+            ['9'] = "nwnwn"
+        };
+
+        var result = new List<ItfPatternSegment>();
+
+        // Start pattern: narrow bar/space/bar/space.
+        result.Add(new ItfPatternSegment(isBar: true, ItfNarrowUnits));
+        result.Add(new ItfPatternSegment(isBar: false, ItfNarrowUnits));
+        result.Add(new ItfPatternSegment(isBar: true, ItfNarrowUnits));
+        result.Add(new ItfPatternSegment(isBar: false, ItfNarrowUnits));
+
+        for (var i = 0; i < digits.Length; i += 2)
+        {
+            var left = encodings[digits[i]];
+            var right = encodings[digits[i + 1]];
+            for (var index = 0; index < 5; index++)
+            {
+                result.Add(new ItfPatternSegment(isBar: true, left[index] == 'w' ? ItfWideUnits : ItfNarrowUnits));
+                result.Add(new ItfPatternSegment(isBar: false, right[index] == 'w' ? ItfWideUnits : ItfNarrowUnits));
+            }
+        }
+
+        // Stop pattern: wide bar, narrow space, narrow bar.
+        result.Add(new ItfPatternSegment(isBar: true, ItfWideUnits));
+        result.Add(new ItfPatternSegment(isBar: false, ItfNarrowUnits));
+        result.Add(new ItfPatternSegment(isBar: true, ItfNarrowUnits));
+
+        return result;
     }
 }
 
@@ -1223,4 +1402,17 @@ internal enum BarcodeType
     Ean8,
     UpcA,
     Itf
+}
+
+internal readonly struct ItfPatternSegment
+{
+    public ItfPatternSegment(bool isBar, int units)
+    {
+        IsBar = isBar;
+        Units = units;
+    }
+
+    public bool IsBar { get; }
+
+    public int Units { get; }
 }
