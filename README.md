@@ -26,6 +26,15 @@
     - `scale`：缩放倍率（如 `0.25`）
     - `preserveAspectRatio`（或 `keepAspectRatio`）：是否保持宽高比，避免拉伸变形
   - 当前约束：图片标签需独占一个段落（单独一行）
+- 条形码标签（inline/block 与图片标签一致）
+  - inline：`{%barcode:expr;type=code128;width=360;height=96}`
+  - block/居中：`{%%barcode:expr;type=ean13;width=280;height=100}`
+  - `expr` 为数据源路径（应解析为字符串/数字）
+  - 支持参数：
+    - `type` / `format`：`code128`、`code39`、`code93`、`codabar`、`ean13`、`ean8`、`upca`、`itf`
+    - `width` / `height`：输出尺寸（像素）
+    - `margin`：条码边距（像素）
+    - `pure`：是否仅输出条码图形（`true/false`）
 - 表达式扩展（管道语法）
   - 排序：`|sort:key:asc` 或 `|sort:key:desc`
   - 截断：`|take:10`
@@ -59,6 +68,7 @@ VIP 客户
 
 {%logo}
 {%%cover}
+{%barcode:barcodes.code128;type=code128;width=360;height=96}
 ```
 
 图片数据对象示例（路径 / data URI + 等比缩放）：
@@ -154,6 +164,7 @@ examples/
   09-inline-ranking-positions/
   10-inline-conditions-and-rates/
   11-images-file-and-datauri-scaling/
+  12-barcodes/
 ```
 
 各示例说明：
@@ -170,6 +181,7 @@ examples/
 - `10-inline-conditions-and-rates`：inline 条件分支、计数，以及百分比/千分比格式化
 - `11-images-file-and-datauri-scaling`：使用真实 PNG 验证文件路径 / data URI 图片插入，以及缩放与等比适配
   - 该示例额外包含 `chart.png`（用于文件路径模式）
+- `12-barcodes`：由模板占位符指定数据源路径与条码参数（类型、尺寸、边距）
 
 如需重新生成示例资产：
 
@@ -183,7 +195,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

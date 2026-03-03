@@ -287,6 +287,29 @@ GenerateExample(
 
 GenerateImagePathAndDataUriScalingExample(examplesRoot, realChartAssetPath);
 
+GenerateExample(
+    examplesRoot,
+    "12-barcodes",
+    """
+    {
+      "barcodes": {
+        "code128": "A20260303001",
+        "ean13": "6901234567892"
+      }
+    }
+    """,
+    """
+    using NDocxTemplater;
+
+    var engine = new DocxTemplateEngine();
+    var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+    File.WriteAllBytes("output.docx", output);
+    """,
+    Paragraph("Code128 条形码（由模板参数指定类型和尺寸）"),
+    Paragraph("{%barcode:barcodes.code128;type=code128;width=360;height=96;margin=1}"),
+    Paragraph("EAN13 条形码（居中）"),
+    Paragraph("{%%barcode:barcodes.ean13;type=ean13;width=280;height=100;margin=2}"));
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;

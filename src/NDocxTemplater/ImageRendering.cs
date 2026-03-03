@@ -13,6 +13,10 @@ using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
 using JArray = System.Text.Json.Nodes.JsonArray;
 using JObject = System.Text.Json.Nodes.JsonObject;
 using JToken = System.Text.Json.Nodes.JsonNode;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
+using ZXing;
+using ZXing.Common;
 
 namespace NDocxTemplater;
 
@@ -29,8 +33,7 @@ internal static class ImageTemplateRenderer
             return false;
         }
 
-        var imageToken = ExpressionEvaluator.Evaluate(imageTag.Expression, context);
-        var images = ImageInputResolver.ResolveMany(imageToken).ToList();
+        var images = ResolvePayloads(imageTag, context).ToList();
 
         foreach (var run in paragraph.Elements<Run>().ToList())
         {
@@ -48,6 +51,18 @@ internal static class ImageTemplateRenderer
         }
 
         return true;
+    }
+
+    private static IEnumerable<ImagePayload> ResolvePayloads(ImageTag imageTag, TemplateContext context)
+    {
+        if (BarcodeTemplateParser.IsBarcodeExpression(imageTag.Expression))
+        {
+            var barcodeTemplate = BarcodeTemplateParser.Parse(imageTag.Expression);
+            return BarcodeTemplateRenderer.ResolveMany(barcodeTemplate, context);
+        }
+
+        var imageToken = ExpressionEvaluator.Evaluate(imageTag.Expression, context);
+        return ImageInputResolver.ResolveMany(imageToken);
     }
 
     private static void CenterParagraph(Paragraph paragraph)
@@ -289,7 +304,7 @@ internal static class ImageInputResolver
         {
             return Convert.FromBase64String(source);
         }
-        catch (FormatException)
+        catch (System.FormatException)
         {
             throw new InvalidOperationException(
                 "Image string value must be base64, base64 data URI, or an existing file path.");
@@ -663,6 +678,277 @@ internal static class ImageInputResolver
     }
 }
 
+internal static class BarcodeTemplateParser
+{
+    public static bool IsBarcodeExpression(string expression)
+    {
+        return !string.IsNullOrWhiteSpace(expression)
+            && expression.TrimStart().StartsWith("barcode:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static BarcodeTemplate Parse(string expression)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            throw new InvalidOperationException("Barcode expression cannot be empty.");
+        }
+
+        var trimmed = expression.Trim();
+        if (!trimmed.StartsWith("barcode:", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Barcode expression must start with 'barcode:'.");
+        }
+
+        var body = trimmed.Substring("barcode:".Length).Trim();
+        if (body.Length == 0)
+        {
+            throw new InvalidOperationException("Barcode expression must include a value path.");
+        }
+
+        var segments = body.Split(new[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(static part => part.Trim())
+            .Where(static part => part.Length > 0)
+            .ToArray();
+
+        if (segments.Length == 0)
+        {
+            throw new InvalidOperationException("Barcode expression must include a value path.");
+        }
+
+        var valueExpression = segments[0];
+        if (valueExpression.Length == 0)
+        {
+            throw new InvalidOperationException("Barcode value path cannot be empty.");
+        }
+
+        var barcodeType = BarcodeType.Code128;
+        int? width = null;
+        int? height = null;
+        int? margin = null;
+        bool? pureBarcode = null;
+
+        foreach (var segment in segments.Skip(1))
+        {
+            var separatorIndex = segment.IndexOf('=');
+            if (separatorIndex < 0)
+            {
+                throw new InvalidOperationException(
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Invalid barcode parameter '{0}'. Expected key=value.",
+                        segment));
+            }
+
+            var key = segment.Substring(0, separatorIndex).Trim();
+            var value = segment.Substring(separatorIndex + 1).Trim();
+
+            if (key.Length == 0)
+            {
+                throw new InvalidOperationException("Barcode parameter key cannot be empty.");
+            }
+
+            switch (key.ToLowerInvariant())
+            {
+                case "type":
+                case "format":
+                case "barcodetype":
+                    barcodeType = ParseBarcodeType(value);
+                    break;
+                case "width":
+                case "widthpx":
+                    width = ParsePositiveInteger(value, key);
+                    break;
+                case "height":
+                case "heightpx":
+                    height = ParsePositiveInteger(value, key);
+                    break;
+                case "margin":
+                    margin = ParseNonNegativeInteger(value, key);
+                    break;
+                case "pure":
+                case "purebarcode":
+                    pureBarcode = ParseBoolean(value, key);
+                    break;
+                default:
+                    throw new InvalidOperationException(
+                        string.Format(
+                            CultureInfo.InvariantCulture,
+                            "Unsupported barcode parameter '{0}'. Supported: type, width, height, margin, pure.",
+                            key));
+            }
+        }
+
+        return new BarcodeTemplate(valueExpression, barcodeType, width, height, margin, pureBarcode);
+    }
+
+    private static BarcodeType ParseBarcodeType(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Trim()
+            .ToLowerInvariant()
+            .Replace("-", string.Empty)
+            .Replace("_", string.Empty)
+            .Replace(" ", string.Empty);
+
+        switch (normalized)
+        {
+            case "code128":
+                return BarcodeType.Code128;
+            case "code39":
+                return BarcodeType.Code39;
+            case "code93":
+                return BarcodeType.Code93;
+            case "codabar":
+                return BarcodeType.Codabar;
+            case "ean13":
+                return BarcodeType.Ean13;
+            case "ean8":
+                return BarcodeType.Ean8;
+            case "upca":
+                return BarcodeType.UpcA;
+            case "itf":
+            case "interleaved2of5":
+                return BarcodeType.Itf;
+            default:
+                throw new InvalidOperationException(
+                    string.Format(
+                        CultureInfo.InvariantCulture,
+                        "Unsupported barcode type '{0}'. Supported: code128, code39, code93, codabar, ean13, ean8, upca, itf.",
+                        text));
+        }
+    }
+
+    private static int ParsePositiveInteger(string text, string key)
+    {
+        if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) || value <= 0)
+        {
+            throw new InvalidOperationException(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Barcode parameter '{0}' must be a positive integer.",
+                    key));
+        }
+
+        return value;
+    }
+
+    private static int ParseNonNegativeInteger(string text, string key)
+    {
+        if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) || value < 0)
+        {
+            throw new InvalidOperationException(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Barcode parameter '{0}' must be a non-negative integer.",
+                    key));
+        }
+
+        return value;
+    }
+
+    private static bool ParseBoolean(string text, string key)
+    {
+        if (!bool.TryParse(text, out var value))
+        {
+            throw new InvalidOperationException(
+                string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Barcode parameter '{0}' must be a boolean value.",
+                    key));
+        }
+
+        return value;
+    }
+}
+
+internal static class BarcodeTemplateRenderer
+{
+    private const int DefaultWidth = 320;
+    private const int DefaultHeight = 96;
+    private const int DefaultMargin = 2;
+    private const bool DefaultPureBarcode = true;
+
+    public static IEnumerable<ImagePayload> ResolveMany(BarcodeTemplate template, TemplateContext context)
+    {
+        var valueToken = ExpressionEvaluator.Evaluate(template.ValueExpression, context);
+        if (JsonNodeHelpers.IsNull(valueToken))
+        {
+            return Enumerable.Empty<ImagePayload>();
+        }
+
+        if (valueToken is JArray array)
+        {
+            return array
+                .Where(static item => !JsonNodeHelpers.IsNull(item))
+                .Select(item => CreatePayload(template, item!))
+                .ToArray();
+        }
+
+        return new[] { CreatePayload(template, valueToken!) };
+    }
+
+    private static ImagePayload CreatePayload(BarcodeTemplate template, JToken valueToken)
+    {
+        var rawValue = ExpressionEvaluator.ToText(valueToken).Trim();
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            throw new InvalidOperationException("Barcode value cannot be empty.");
+        }
+
+        var format = MapBarcodeFormat(template.Type);
+        var width = template.Width ?? DefaultWidth;
+        var height = template.Height ?? DefaultHeight;
+        var margin = template.Margin ?? DefaultMargin;
+        var pureBarcode = template.PureBarcode ?? DefaultPureBarcode;
+
+        var writer = new BarcodeWriterPixelData
+        {
+            Format = format,
+            Options = new EncodingOptions
+            {
+                Width = width,
+                Height = height,
+                Margin = margin,
+                PureBarcode = pureBarcode
+            }
+        };
+
+        var pixelData = writer.Write(rawValue);
+
+        using (var image = Image.LoadPixelData<Bgra32>(pixelData.Pixels, pixelData.Width, pixelData.Height))
+        using (var buffer = new MemoryStream())
+        {
+            image.SaveAsPng(buffer);
+            return new ImagePayload(buffer.ToArray(), ImagePartType.Png, pixelData.Width, pixelData.Height);
+        }
+    }
+
+    private static BarcodeFormat MapBarcodeFormat(BarcodeType type)
+    {
+        switch (type)
+        {
+            case BarcodeType.Code128:
+                return BarcodeFormat.CODE_128;
+            case BarcodeType.Code39:
+                return BarcodeFormat.CODE_39;
+            case BarcodeType.Code93:
+                return BarcodeFormat.CODE_93;
+            case BarcodeType.Codabar:
+                return BarcodeFormat.CODABAR;
+            case BarcodeType.Ean13:
+                return BarcodeFormat.EAN_13;
+            case BarcodeType.Ean8:
+                return BarcodeFormat.EAN_8;
+            case BarcodeType.UpcA:
+                return BarcodeFormat.UPC_A;
+            case BarcodeType.Itf:
+                return BarcodeFormat.ITF;
+            default:
+                throw new InvalidOperationException("Unsupported barcode type.");
+        }
+    }
+}
+
 internal static class ImageBinaryInspector
 {
     public static bool IsPng(byte[] data)
@@ -894,4 +1180,47 @@ internal readonly struct ImageSize
     public int Width { get; }
 
     public int Height { get; }
+}
+
+internal readonly struct BarcodeTemplate
+{
+    public BarcodeTemplate(
+        string valueExpression,
+        BarcodeType type,
+        int? width,
+        int? height,
+        int? margin,
+        bool? pureBarcode)
+    {
+        ValueExpression = valueExpression;
+        Type = type;
+        Width = width;
+        Height = height;
+        Margin = margin;
+        PureBarcode = pureBarcode;
+    }
+
+    public string ValueExpression { get; }
+
+    public BarcodeType Type { get; }
+
+    public int? Width { get; }
+
+    public int? Height { get; }
+
+    public int? Margin { get; }
+
+    public bool? PureBarcode { get; }
+}
+
+internal enum BarcodeType
+{
+    Code128,
+    Code39,
+    Code93,
+    Codabar,
+    Ean13,
+    Ean8,
+    UpcA,
+    Itf
 }

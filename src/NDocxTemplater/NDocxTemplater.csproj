@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <PackageId>NDocxTemplater</PackageId>
-    <Version>1.4.0</Version>
+    <Version>1.5.0</Version>
     <Title>NDocxTemplater</Title>
     <Description>A .NET DOCX templating engine inspired by docxtemplater, supporting tags, conditions, loops, tables, and images from JSON data.</Description>
     <Authors>Wang Hongyi</Authors>
@@ -24,7 +24,9 @@
 
   <ItemGroup>
     <PackageReference Include="DocumentFormat.OpenXml" Version="3.3.0" />
+    <PackageReference Include="SixLabors.ImageSharp" Version="2.1.10" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
+    <PackageReference Include="ZXing.Net" Version="0.16.10" />
   </ItemGroup>
 
   <ItemGroup>

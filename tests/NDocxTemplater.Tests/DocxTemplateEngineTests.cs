@@ -5,6 +5,8 @@ using System.Linq;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 using Xunit;
 using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 
@@ -389,6 +391,64 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_GeneratesBarcodes_FromTemplateParameters()
+    {
+        var template = CreateTemplate(
+            Paragraph("Code128"),
+            Paragraph("{%barcode:barcodes.code128;type=code128;width=360;height=96;margin=1}"),
+            Paragraph("EAN13 centered"),
+            Paragraph("{%%barcode:barcodes.ean13;type=ean13;width=280;height=100;margin=2}"));
+
+        const string json = @"{
+  ""barcodes"": {
+    ""code128"": ""A20260303001"",
+    ""ean13"": ""6901234567892""
+  }
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var drawings = document.MainDocumentPart!.Document.Body!.Descendants<Drawing>().ToList();
+            Assert.Equal(2, drawings.Count);
+
+            var extents = drawings
+                .Select(static drawing => drawing.Descendants<DW.Extent>().Single())
+                .Select(static extent => (extent.Cx!.Value, extent.Cy!.Value))
+                .ToArray();
+
+            Assert.Equal((360 * 9525L, 96 * 9525L), extents[0]);
+            Assert.Equal((280 * 9525L, 100 * 9525L), extents[1]);
+
+            var drawingParagraphs = document.MainDocumentPart.Document.Body!
+                .Elements<Paragraph>()
+                .Where(static paragraph => paragraph.Descendants<Drawing>().Any())
+                .ToArray();
+            Assert.Equal(2, drawingParagraphs.Length);
+
+            var centeredParagraph = drawingParagraphs[1];
+            Assert.Equal(
+                JustificationValues.Center,
+                centeredParagraph.ParagraphProperties?.Justification?.Val?.Value);
+
+            var imageBytes = document.MainDocumentPart.ImageParts
+                .Select(static part =>
+                {
+                    using var imageStream = part.GetStream();
+                    using var copy = new MemoryStream();
+                    imageStream.CopyTo(copy);
+                    return copy.ToArray();
+                })
+                .ToArray();
+
+            Assert.Equal(2, imageBytes.Length);
+            Assert.All(imageBytes, bytes => Assert.True(ContainsDarkPixels(bytes)));
+        }
+    }
+
+    [Fact]
     public void Render_FormatsDateExpressionInTable_WhenTagIsSplitAcrossRuns()
     {
         var template = CreateTemplate(
@@ -525,5 +585,25 @@ public class DocxTemplateEngineTests
         return text
             .Replace("\\", "\\\\")
             .Replace("\"", "\\\"");
+    }
+
+    private static bool ContainsDarkPixels(byte[] pngBytes)
+    {
+        using (var image = Image.Load<Rgba32>(pngBytes))
+        {
+            for (var y = 0; y < image.Height; y++)
+            {
+                for (var x = 0; x < image.Width; x++)
+                {
+                    var pixel = image[x, y];
+                    if (pixel.A > 0 && (pixel.R < 200 || pixel.G < 200 || pixel.B < 200))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 }
