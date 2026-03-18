@@ -1,6 +1,6 @@
 # NDocxTemplater
 
-一个基于 OpenXML 的 `.docx + JSON` 模板渲染库，目标是提供类似 `docxtemplater` 的 .NET 替代方案。
+一个基于 OpenXML 的模板渲染库，当前支持 `.docx + JSON` 和 `.xlsx + JSON`，目标是提供类似 `docxtemplater` 的 .NET 替代方案。
 
 ## 目标框架
 
@@ -15,6 +15,7 @@
 - 条件分支：`{?expr} ... {/?expr}`
 - 循环：`{#expr} ... {/expr}`
 - 表格循环：把循环标记放在表格行中，可按行复制输出列表数据
+- `.xlsx` 工作表行循环：把循环/条件标记放在工作表行中，可按行复制输出列表数据，并保留模板行样式
 - 支持 Word 将标签拆分到多个 Run/Text 节点后的渲染（包含表格单元格内格式表达式）
 - 图片标签（参考 docxtemplater image tag 风格）
   - inline：`{%imagePath}`
@@ -117,6 +118,25 @@ VIP 客户
 - `|count` 已支持 inline 文本（例如 `共有{items|count}项`）
 - `|format:number:0.00%` / `|format:number:0.00‰` 也仍然可用；`percent/permille` 只是更直观的别名
 
+## XLSX 模板行语法
+
+`.xlsx` 目前遵从现有“表格部分”的控制标记语法，只是把载体换成了工作表行：
+
+```text
+第 1 行: Item | Qty | Amount
+第 2 行: {#report.lines|sort:amount:desc|take:2} | | 
+第 3 行: {name} | {qty} | {amount|format:number:0.00}
+第 4 行: {/report.lines|sort:amount:desc|take:2} | |
+第 5 行: {?showFooter} | |
+第 6 行: Count | {report.lines|count} |
+第 7 行: {/?showFooter} | |
+```
+
+规则：
+- 控制标记行应只有一个非空单元格包含完整标记，其他单元格留空
+- 循环块会复制中间模板行，并保留模板行/单元格样式
+- 普通单元格内联表达式与 `.docx` 使用同一套路径和管道语法
+
 ## 快速使用
 
 ```csharp
@@ -128,6 +148,19 @@ var json = File.ReadAllText("data.json");
 
 var outputBytes = engine.Render(templateBytes, json);
 File.WriteAllBytes("output.docx", outputBytes);
+```
+
+`.xlsx` 用法：
+
+```csharp
+using NDocxTemplater;
+
+var engine = new XlsxTemplateEngine();
+var templateBytes = File.ReadAllBytes("template.xlsx");
+var json = File.ReadAllText("data.json");
+
+var outputBytes = engine.Render(templateBytes, json);
+File.WriteAllBytes("output.xlsx", outputBytes);
 ```
 
 ## NuGet Package
@@ -145,9 +178,9 @@ File.WriteAllBytes("output.docx", outputBytes);
 
 `examples` 下每个子目录都是一个独立用例，至少包含：
 
-- `template.docx`：模板文件
+- `template.docx` 或 `template.xlsx`：模板文件
 - `data.json`：输入数据
-- `output.docx`：按模板渲染后的结果文档
+- `output.docx` 或 `output.xlsx`：按模板渲染后的结果文档
 - `example.cs`：最小调用代码
 
 目录如下：
@@ -166,6 +199,7 @@ examples/
   10-inline-conditions-and-rates/
   11-images-file-and-datauri-scaling/
   12-barcodes/
+  13-xlsx-row-loop/
 ```
 
 各示例说明：
@@ -183,6 +217,7 @@ examples/
 - `11-images-file-and-datauri-scaling`：使用真实 PNG 验证文件路径 / data URI 图片插入，以及缩放与等比适配
   - 该示例额外包含 `chart.png`（用于文件路径模式）
 - `12-barcodes`：由模板占位符指定数据源路径与条码参数（类型、尺寸、边距）
+- `13-xlsx-row-loop`：`.xlsx` 工作表按行循环、条件行和单元格表达式替换
 
 如需重新生成示例资产：
 
@@ -196,7 +231,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、`.xlsx` 工作表行循环/条件/样式保留、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

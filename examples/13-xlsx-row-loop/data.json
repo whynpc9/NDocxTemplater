@@ -1,0 +1,11 @@
+{
+  "report": {
+    "title": "Sales Summary",
+    "lines": [
+      { "name": "Apple", "qty": 2, "amount": 12.5 },
+      { "name": "Banana", "qty": 5, "amount": 66.2 },
+      { "name": "Orange", "qty": 3, "amount": 100.0 }
+    ]
+  },
+  "showFooter": true
+}

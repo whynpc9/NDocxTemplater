@@ -5,14 +5,13 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using NDocxTemplater;
+using S = DocumentFormat.OpenXml.Spreadsheet;
 
 var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
 var examplesRoot = Path.Combine(repoRoot, "examples");
 Directory.CreateDirectory(examplesRoot);
 const string TinyPngDataUri = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8B9pYAAAAASUVORK5CYII=";
 var realChartAssetPath = Path.Combine(repoRoot, "tests", "NDocxTemplater.Tests", "Assets", "real-chart.png");
-
-var engine = new DocxTemplateEngine();
 
 GenerateExample(
     examplesRoot,
@@ -310,6 +309,40 @@ GenerateExample(
     Paragraph("EAN13 条形码（居中）"),
     Paragraph("{%%barcode:barcodes.ean13;type=ean13;width=280;height=100;margin=2}"));
 
+GenerateWorkbookExample(
+    examplesRoot,
+    "13-xlsx-row-loop",
+    """
+    {
+      "report": {
+        "title": "Sales Summary",
+        "lines": [
+          { "name": "Apple", "qty": 2, "amount": 12.5 },
+          { "name": "Banana", "qty": 5, "amount": 66.2 },
+          { "name": "Orange", "qty": 3, "amount": 100.0 }
+        ]
+      },
+      "showFooter": true
+    }
+    """,
+    """
+    using NDocxTemplater;
+
+    var engine = new XlsxTemplateEngine();
+    var templateBytes = File.ReadAllBytes("template.xlsx");
+    var json = File.ReadAllText("data.json");
+    var output = engine.Render(templateBytes, json);
+    File.WriteAllBytes("output.xlsx", output);
+    """,
+    WorkbookRowSpec.Create("Report", "{report.title}"),
+    WorkbookRowSpec.Create("Item", "Qty", "Amount", styleIndex: 1U),
+    WorkbookRowSpec.Create("{#report.lines|sort:amount:desc|take:2}", string.Empty, string.Empty),
+    WorkbookRowSpec.Create("{name}", "{qty}", "{amount|format:number:0.00}", styleIndex: 1U),
+    WorkbookRowSpec.Create("{/report.lines|sort:amount:desc|take:2}", string.Empty, string.Empty),
+    WorkbookRowSpec.Create("{?showFooter}", string.Empty, string.Empty),
+    WorkbookRowSpec.Create("Count", "{report.lines|count}", string.Empty, styleIndex: 1U),
+    WorkbookRowSpec.Create("{/?showFooter}", string.Empty, string.Empty));
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;
@@ -365,6 +398,32 @@ static void GenerateExample(
         Environment.CurrentDirectory = originalCurrentDirectory;
     }
 
+    File.WriteAllBytes(outputPath, outputBytes);
+}
+
+static void GenerateWorkbookExample(
+    string examplesRoot,
+    string name,
+    string json,
+    string sampleCode,
+    params WorkbookRowSpec[] rows)
+{
+    var dir = Path.Combine(examplesRoot, name);
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.xlsx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.xlsx");
+    var codePath = Path.Combine(dir, "example.cs");
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateWorkbookTemplate(rows);
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new XlsxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
     File.WriteAllBytes(outputPath, outputBytes);
 }
 
@@ -476,4 +535,141 @@ static TableCell CellWithSplitRuns(params string[] pieces)
     }
 
     return new TableCell(paragraph);
+}
+
+static byte[] CreateWorkbookTemplate(params WorkbookRowSpec[] rows)
+{
+    using var stream = new MemoryStream();
+    using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook, true))
+    {
+        var workbookPart = document.AddWorkbookPart();
+        workbookPart.Workbook = new S.Workbook();
+
+        var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+        sharedStringPart.SharedStringTable = new S.SharedStringTable();
+
+        var stylesPart = workbookPart.AddNewPart<WorkbookStylesPart>();
+        stylesPart.Stylesheet = CreateWorkbookStylesheet();
+        stylesPart.Stylesheet.Save();
+
+        var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+        var sheetData = new S.SheetData();
+
+        for (var rowIndex = 0; rowIndex < rows.Length; rowIndex++)
+        {
+            var row = new S.Row { RowIndex = (uint)(rowIndex + 1) };
+            for (var columnIndex = 0; columnIndex < rows[rowIndex].Values.Length; columnIndex++)
+            {
+                var cell = CreateWorkbookSharedStringCell(
+                    workbookPart,
+                    rows[rowIndex].Values[columnIndex],
+                    GetWorkbookCellReference(columnIndex + 1, rowIndex + 1));
+
+                var styleIndex = rows[rowIndex].GetStyleIndex(columnIndex);
+                if (styleIndex.HasValue)
+                {
+                    cell.StyleIndex = styleIndex.Value;
+                }
+
+                row.Append(cell);
+            }
+
+            sheetData.Append(row);
+        }
+
+        var lastReference = rows.Length == 0
+            ? "A1"
+            : GetWorkbookCellReference(rows[0].Values.Length, rows.Length);
+
+        worksheetPart.Worksheet = new S.Worksheet(
+            new S.SheetDimension { Reference = "A1:" + lastReference },
+            sheetData);
+        worksheetPart.Worksheet.Save();
+
+        workbookPart.Workbook.Append(
+            new S.Sheets(
+                new S.Sheet
+                {
+                    Id = workbookPart.GetIdOfPart(worksheetPart),
+                    SheetId = 1U,
+                    Name = "Report"
+                }));
+        workbookPart.Workbook.Save();
+    }
+
+    return stream.ToArray();
+}
+
+static S.Stylesheet CreateWorkbookStylesheet()
+{
+    return new S.Stylesheet(
+        new S.Fonts(new S.Font(), new S.Font(new S.Bold())),
+        new S.Fills(new S.Fill(new S.PatternFill { PatternType = S.PatternValues.None }), new S.Fill(new S.PatternFill { PatternType = S.PatternValues.Gray125 })),
+        new S.Borders(new S.Border()),
+        new S.CellStyleFormats(new S.CellFormat()),
+        new S.CellFormats(
+            new S.CellFormat(),
+            new S.CellFormat { FontId = 1U, FillId = 0U, BorderId = 0U, ApplyFont = true }));
+}
+
+static S.Cell CreateWorkbookSharedStringCell(WorkbookPart workbookPart, string text, string cellReference)
+{
+    var sharedStringTable = workbookPart.SharedStringTablePart!.SharedStringTable!;
+    sharedStringTable.AppendChild(new S.SharedStringItem(new S.Text(text ?? string.Empty)));
+    var index = sharedStringTable.Elements<S.SharedStringItem>().Count() - 1;
+
+    return new S.Cell
+    {
+        CellReference = cellReference,
+        DataType = S.CellValues.SharedString,
+        CellValue = new S.CellValue(index.ToString(System.Globalization.CultureInfo.InvariantCulture))
+    };
+}
+
+static string GetWorkbookCellReference(int columnIndex, int rowIndex)
+{
+    return GetWorkbookColumnName(columnIndex) + rowIndex.ToString();
+}
+
+static string GetWorkbookColumnName(int columnIndex)
+{
+    var letters = new Stack<char>();
+    var index = columnIndex;
+    while (index > 0)
+    {
+        index--;
+        letters.Push((char)('A' + (index % 26)));
+        index /= 26;
+    }
+
+    return new string(letters.ToArray());
+}
+
+readonly struct WorkbookRowSpec
+{
+    public WorkbookRowSpec(string[] values, uint?[] styleIndexes)
+    {
+        Values = values;
+        StyleIndexes = styleIndexes;
+    }
+
+    public string[] Values { get; }
+
+    public uint?[] StyleIndexes { get; }
+
+    public static WorkbookRowSpec Create(params string[] values)
+    {
+        return new WorkbookRowSpec(values, new uint?[values.Length]);
+    }
+
+    public static WorkbookRowSpec Create(string first, string second, string third, uint styleIndex)
+    {
+        var values = new[] { first, second, third };
+        return new WorkbookRowSpec(values, Enumerable.Repeat<uint?>(styleIndex, values.Length).ToArray());
+    }
+
+    public uint? GetStyleIndex(int columnIndex)
+    {
+        return columnIndex >= 0 && columnIndex < StyleIndexes.Length ? StyleIndexes[columnIndex] : null;
+    }
 }
