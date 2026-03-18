@@ -4,12 +4,12 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <PackageId>NDocxTemplater</PackageId>
-    <Version>1.6.0</Version>
+    <Version>1.7.0</Version>
     <Title>NDocxTemplater</Title>
-    <Description>A .NET DOCX templating engine inspired by docxtemplater, supporting tags, conditions, loops, tables, and images from JSON data.</Description>
+    <Description>A .NET DOCX/XLSX templating engine inspired by docxtemplater, supporting tags, conditions, loops, tables, images, barcodes, and spreadsheet row rendering from JSON data.</Description>
     <Authors>Wang Hongyi</Authors>
     <Company>Wang Hongyi</Company>
-    <PackageTags>docx;template;openxml;report;json;templating</PackageTags>
+    <PackageTags>docx;xlsx;template;openxml;report;json;templating</PackageTags>
     <PackageProjectUrl>https://github.com/whynpc9/NDocxTemplater</PackageProjectUrl>
     <RepositoryUrl>https://github.com/whynpc9/NDocxTemplater.git</RepositoryUrl>
     <RepositoryType>git</RepositoryType>

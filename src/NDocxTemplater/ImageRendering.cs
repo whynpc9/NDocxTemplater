@@ -54,14 +54,7 @@ internal static class ImageTemplateRenderer
 
     private static IEnumerable<ImagePayload> ResolvePayloads(ImageTag imageTag, TemplateContext context)
     {
-        if (BarcodeTemplateParser.IsBarcodeExpression(imageTag.Expression))
-        {
-            var barcodeTemplate = BarcodeTemplateParser.Parse(imageTag.Expression);
-            return BarcodeTemplateRenderer.ResolveMany(barcodeTemplate, context);
-        }
-
-        var imageToken = ExpressionEvaluator.Evaluate(imageTag.Expression, context);
-        return ImageInputResolver.ResolveMany(imageToken);
+        return TemplateMediaResolver.ResolveMany(imageTag.Expression, context);
     }
 
     private static void CenterParagraph(Paragraph paragraph)
@@ -142,6 +135,21 @@ internal static class ImageTemplateRenderer
     {
         var safePixels = pixels <= 0 ? 1 : pixels;
         return safePixels * 9525L;
+    }
+}
+
+internal static class TemplateMediaResolver
+{
+    public static IEnumerable<ImagePayload> ResolveMany(string expression, TemplateContext context)
+    {
+        if (BarcodeTemplateParser.IsBarcodeExpression(expression))
+        {
+            var barcodeTemplate = BarcodeTemplateParser.Parse(expression);
+            return BarcodeTemplateRenderer.ResolveMany(barcodeTemplate, context);
+        }
+
+        var imageToken = ExpressionEvaluator.Evaluate(expression, context);
+        return ImageInputResolver.ResolveMany(imageToken);
     }
 }
 

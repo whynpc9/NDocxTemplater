@@ -1,0 +1,6 @@
+{
+  "lines": [
+    { "name": "Alpha", "qty": 2, "price": 5 },
+    { "name": "Beta", "qty": 3, "price": 7 }
+  ]
+}

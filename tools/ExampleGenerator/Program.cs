@@ -343,6 +343,9 @@ GenerateWorkbookExample(
     WorkbookRowSpec.Create("Count", "{report.lines|count}", string.Empty, styleIndex: 1U),
     WorkbookRowSpec.Create("{/?showFooter}", string.Empty, string.Empty));
 
+GenerateWorkbookMediaExample(examplesRoot, realChartAssetPath);
+GenerateWorkbookMergeAndFormulaExample(examplesRoot);
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;
@@ -423,7 +426,18 @@ static void GenerateWorkbookExample(
     File.WriteAllBytes(templatePath, templateBytes);
 
     var engine = new XlsxTemplateEngine();
-    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    var originalCurrentDirectory = Environment.CurrentDirectory;
+    Environment.CurrentDirectory = dir;
+    byte[] outputBytes;
+    try
+    {
+        outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    }
+    finally
+    {
+        Environment.CurrentDirectory = originalCurrentDirectory;
+    }
+
     File.WriteAllBytes(outputPath, outputBytes);
 }
 
@@ -479,6 +493,124 @@ static void GenerateImagePathAndDataUriScalingExample(string examplesRoot, strin
         Paragraph("{%%fromDataUri}"),
         Paragraph("图片（在固定宽高盒子中等比缩放，不拉伸变形）"),
         Paragraph("{%%fitInBox}"));
+}
+
+static void GenerateWorkbookMediaExample(string examplesRoot, string imageAssetPath)
+{
+    if (!File.Exists(imageAssetPath))
+    {
+        throw new FileNotFoundException("Missing real image asset for workbook examples.", imageAssetPath);
+    }
+
+    var imageBytes = File.ReadAllBytes(imageAssetPath);
+    var imageDataUri = "data:image/png;base64," + Convert.ToBase64String(imageBytes);
+    var dir = Path.Combine(examplesRoot, "14-xlsx-media-placeholders");
+    Directory.CreateDirectory(dir);
+
+    var chartPath = Path.Combine(dir, "chart.png");
+    File.Copy(imageAssetPath, chartPath, overwrite: true);
+
+    GenerateWorkbookExample(
+        examplesRoot,
+        "14-xlsx-media-placeholders",
+        """
+        {
+          "pathImage": {
+            "src": "chart.png",
+            "maxWidth": 320,
+            "preserveAspectRatio": true
+          },
+          "dataUriImage": {
+            "src": "__REAL_CHART_DATA_URI__",
+            "scale": 0.2,
+            "preserveAspectRatio": true
+          },
+          "barcodes": {
+            "ean13": "5901234123457"
+          }
+        }
+        """.Replace("__REAL_CHART_DATA_URI__", imageDataUri),
+        """
+        using NDocxTemplater;
+
+        var engine = new XlsxTemplateEngine();
+        var templateBytes = File.ReadAllBytes("template.xlsx");
+        var json = File.ReadAllText("data.json");
+        var output = engine.Render(templateBytes, json);
+        File.WriteAllBytes("output.xlsx", output);
+        """,
+        WorkbookRowSpec.Create("Media", "Value"),
+        WorkbookRowSpec.Create("From path", "{%pathImage}"),
+        WorkbookRowSpec.Create("From data URI", "{%dataUriImage}"),
+        WorkbookRowSpec.Create("Barcode", "{%barcode:barcodes.ean13;type=ean13;width=220;height=80}"));
+}
+
+static void GenerateWorkbookMergeAndFormulaExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "15-xlsx-merged-cells-and-formulas");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.xlsx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.xlsx");
+    var codePath = Path.Combine(dir, "example.cs");
+
+    var json = """
+        {
+          "lines": [
+            { "name": "Alpha", "qty": 2, "price": 5 },
+            { "name": "Beta", "qty": 3, "price": 7 }
+          ]
+        }
+        """;
+
+    var sampleCode = """
+        using NDocxTemplater;
+
+        var engine = new XlsxTemplateEngine();
+        var templateBytes = File.ReadAllBytes("template.xlsx");
+        var json = File.ReadAllText("data.json");
+        var output = engine.Render(templateBytes, json);
+        File.WriteAllBytes("output.xlsx", output);
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateAdvancedWorkbookTemplate(
+        new[] { "A3:A4" },
+        WorkbookAdvancedRowSpec.Create("Name", "Value", "Calc"),
+        WorkbookAdvancedRowSpec.Create("{#lines}", string.Empty, string.Empty),
+        WorkbookAdvancedRowSpec.Create(
+            WorkbookCellSpec.Text("{name}"),
+            WorkbookCellSpec.Text("{qty}"),
+            WorkbookCellSpec.Formula("B3*2")),
+        WorkbookAdvancedRowSpec.Create(
+            WorkbookCellSpec.Text(string.Empty),
+            WorkbookCellSpec.Text("{price}"),
+            WorkbookCellSpec.Formula("B4*3")),
+        WorkbookAdvancedRowSpec.Create("{/lines}", string.Empty, string.Empty),
+        WorkbookAdvancedRowSpec.Create(
+            WorkbookCellSpec.Text("Total"),
+            WorkbookCellSpec.Text(string.Empty),
+            WorkbookCellSpec.Formula("SUM(C3:C4)")));
+
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new XlsxTemplateEngine();
+    var originalCurrentDirectory = Environment.CurrentDirectory;
+    Environment.CurrentDirectory = dir;
+    byte[] outputBytes;
+    try
+    {
+        outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    }
+    finally
+    {
+        Environment.CurrentDirectory = originalCurrentDirectory;
+    }
+
+    File.WriteAllBytes(outputPath, outputBytes);
 }
 
 static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
@@ -600,6 +732,83 @@ static byte[] CreateWorkbookTemplate(params WorkbookRowSpec[] rows)
     return stream.ToArray();
 }
 
+static byte[] CreateAdvancedWorkbookTemplate(IReadOnlyList<string> mergedRanges, params WorkbookAdvancedRowSpec[] rows)
+{
+    using var stream = new MemoryStream();
+    using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook, true))
+    {
+        var workbookPart = document.AddWorkbookPart();
+        workbookPart.Workbook = new S.Workbook();
+
+        var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+        sharedStringPart.SharedStringTable = new S.SharedStringTable();
+
+        var stylesPart = workbookPart.AddNewPart<WorkbookStylesPart>();
+        stylesPart.Stylesheet = CreateWorkbookStylesheet();
+        stylesPart.Stylesheet.Save();
+
+        var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+        var sheetData = new S.SheetData();
+
+        for (var rowIndex = 0; rowIndex < rows.Length; rowIndex++)
+        {
+            var row = new S.Row { RowIndex = (uint)(rowIndex + 1) };
+            for (var columnIndex = 0; columnIndex < rows[rowIndex].Cells.Length; columnIndex++)
+            {
+                var cellSpec = rows[rowIndex].Cells[columnIndex];
+                var cellReference = GetWorkbookCellReference(columnIndex + 1, rowIndex + 1);
+                var cell = cellSpec.IsFormula
+                    ? CreateWorkbookFormulaCell(cellSpec.Value, cellReference)
+                    : CreateWorkbookSharedStringCell(workbookPart, cellSpec.Value, cellReference);
+
+                if (cellSpec.StyleIndex.HasValue)
+                {
+                    cell.StyleIndex = cellSpec.StyleIndex.Value;
+                }
+
+                row.Append(cell);
+            }
+
+            sheetData.Append(row);
+        }
+
+        var lastReference = rows.Length == 0
+            ? "A1"
+            : GetWorkbookCellReference(rows[0].Cells.Length, rows.Length);
+
+        var worksheet = new S.Worksheet(
+            new S.SheetDimension { Reference = "A1:" + lastReference },
+            sheetData);
+
+        if (mergedRanges.Count > 0)
+        {
+            var mergeCells = new S.MergeCells();
+            foreach (var mergedRange in mergedRanges)
+            {
+                mergeCells.Append(new S.MergeCell { Reference = mergedRange });
+            }
+
+            mergeCells.Count = (uint)mergedRanges.Count;
+            worksheet.Append(mergeCells);
+        }
+
+        worksheetPart.Worksheet = worksheet;
+        worksheetPart.Worksheet.Save();
+
+        workbookPart.Workbook.Append(
+            new S.Sheets(
+                new S.Sheet
+                {
+                    Id = workbookPart.GetIdOfPart(worksheetPart),
+                    SheetId = 1U,
+                    Name = "Report"
+                }));
+        workbookPart.Workbook.Save();
+    }
+
+    return stream.ToArray();
+}
+
 static S.Stylesheet CreateWorkbookStylesheet()
 {
     return new S.Stylesheet(
@@ -623,6 +832,16 @@ static S.Cell CreateWorkbookSharedStringCell(WorkbookPart workbookPart, string t
         CellReference = cellReference,
         DataType = S.CellValues.SharedString,
         CellValue = new S.CellValue(index.ToString(System.Globalization.CultureInfo.InvariantCulture))
+    };
+}
+
+static S.Cell CreateWorkbookFormulaCell(string formula, string cellReference)
+{
+    return new S.Cell
+    {
+        CellReference = cellReference,
+        CellFormula = new S.CellFormula(formula),
+        CellValue = new S.CellValue(string.Empty)
     };
 }
 
@@ -671,5 +890,51 @@ readonly struct WorkbookRowSpec
     public uint? GetStyleIndex(int columnIndex)
     {
         return columnIndex >= 0 && columnIndex < StyleIndexes.Length ? StyleIndexes[columnIndex] : null;
+    }
+}
+
+readonly struct WorkbookAdvancedRowSpec
+{
+    public WorkbookAdvancedRowSpec(WorkbookCellSpec[] cells)
+    {
+        Cells = cells;
+    }
+
+    public WorkbookCellSpec[] Cells { get; }
+
+    public static WorkbookAdvancedRowSpec Create(params string[] values)
+    {
+        return new WorkbookAdvancedRowSpec(values.Select(static value => WorkbookCellSpec.Text(value)).ToArray());
+    }
+
+    public static WorkbookAdvancedRowSpec Create(params WorkbookCellSpec[] cells)
+    {
+        return new WorkbookAdvancedRowSpec(cells);
+    }
+}
+
+readonly struct WorkbookCellSpec
+{
+    public WorkbookCellSpec(string value, bool isFormula, uint? styleIndex = null)
+    {
+        Value = value;
+        IsFormula = isFormula;
+        StyleIndex = styleIndex;
+    }
+
+    public string Value { get; }
+
+    public bool IsFormula { get; }
+
+    public uint? StyleIndex { get; }
+
+    public static WorkbookCellSpec Text(string value, uint? styleIndex = null)
+    {
+        return new WorkbookCellSpec(value, false, styleIndex);
+    }
+
+    public static WorkbookCellSpec Formula(string formula, uint? styleIndex = null)
+    {
+        return new WorkbookCellSpec(formula, true, styleIndex);
     }
 }

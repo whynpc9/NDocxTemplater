@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using DocumentFormat.OpenXml.Drawing.Spreadsheet;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Spreadsheet;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 using Xunit;
 
 namespace NDocxTemplater.Tests;
@@ -72,7 +75,131 @@ public class XlsxTemplateEngineTests
         Assert.Equal(new uint?[] { 1U, 1U, 1U }, rows[3].StyleIndexes);
     }
 
+    [Fact]
+    public void Render_InsertsWorksheetImagesAndBarcodes_FromCellPlaceholders()
+    {
+        var imagePath = GetTestAssetPath("real-chart.png");
+        var imageBytes = File.ReadAllBytes(imagePath);
+        var imageDataUri = "data:image/png;base64," + Convert.ToBase64String(imageBytes);
+        var imageSize = GetImageSize(imageBytes);
+
+        var template = CreateWorkbook(
+            RowSpec.Create("Media", "Value"),
+            RowSpec.Create("From path", "{%pathImage}"),
+            RowSpec.Create("From data URI", "{%dataUriImage}"),
+            RowSpec.Create("Barcode", "{%barcode:barcodes.ean13;type=ean13;width=220;height=80}"));
+
+        var json = @"{
+  ""pathImage"": {
+    ""src"": """ + EscapeJsonString(imagePath) + @""",
+    ""maxWidth"": 320,
+    ""preserveAspectRatio"": true
+  },
+  ""dataUriImage"": {
+    ""src"": """ + imageDataUri + @""",
+    ""scale"": 0.2,
+    ""preserveAspectRatio"": true
+  },
+  ""barcodes"": {
+    ""ean13"": ""5901234123457""
+  }
+}";
+
+        var output = _engine.Render(template, json);
+        var rows = ReadSheetRows(output);
+
+        Assert.Equal(string.Empty, rows[1].Values[1]);
+        Assert.Equal(string.Empty, rows[2].Values[1]);
+        Assert.Equal(string.Empty, rows[3].Values[1]);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = SpreadsheetDocument.Open(stream, false))
+        {
+            var worksheetPart = document.WorkbookPart!.WorksheetParts.First();
+            Assert.NotNull(worksheetPart.DrawingsPart);
+            Assert.NotNull(worksheetPart.Worksheet.Elements<Drawing>().FirstOrDefault());
+
+            var drawing = worksheetPart.DrawingsPart!.WorksheetDrawing!;
+            var anchors = drawing.Elements<OneCellAnchor>().ToArray();
+            Assert.Equal(3, anchors.Length);
+
+            Assert.Equal("B2", AnchorToCell(anchors[0]));
+            Assert.Equal("B3", AnchorToCell(anchors[1]));
+            Assert.Equal("B4", AnchorToCell(anchors[2]));
+
+            Assert.Equal(PixelsToEmu(320), anchors[0].Extent!.Cx!.Value);
+            Assert.Equal(PixelsToEmu((int)Math.Round(imageSize.Height * (320d / imageSize.Width))), anchors[0].Extent!.Cy!.Value);
+
+            Assert.Equal(PixelsToEmu((int)Math.Round(imageSize.Width * 0.2d)), anchors[1].Extent!.Cx!.Value);
+            Assert.Equal(PixelsToEmu((int)Math.Round(imageSize.Height * 0.2d)), anchors[1].Extent!.Cy!.Value);
+
+            var embeddedImages = worksheetPart.DrawingsPart.ImageParts
+                .Select(part =>
+                {
+                    using var imageStream = part.GetStream();
+                    using var copy = new MemoryStream();
+                    imageStream.CopyTo(copy);
+                    return copy.ToArray();
+                })
+                .ToArray();
+
+            Assert.Equal(3, embeddedImages.Length);
+            Assert.Equal(2, embeddedImages.Count(bytes => bytes.SequenceEqual(imageBytes)));
+            Assert.Single(embeddedImages, bytes => !bytes.SequenceEqual(imageBytes));
+            Assert.True(ContainsDarkPixels(embeddedImages.Single(bytes => !bytes.SequenceEqual(imageBytes))));
+        }
+    }
+
+    [Fact]
+    public void Render_RepeatsMergedRanges_AndAdjustsFormulaReferences()
+    {
+        var template = CreateWorkbook(
+            new[] { "A3:A4" },
+            RowSpec.Create("Name", "Value", "Calc"),
+            RowSpec.Create("{#lines}", string.Empty, string.Empty),
+            RowSpec.Create(CellSpec.Text("{name}"), CellSpec.Text("{qty}"), CellSpec.Formula("B3*2")),
+            RowSpec.Create(CellSpec.Text(string.Empty), CellSpec.Text("{price}"), CellSpec.Formula("B4*3")),
+            RowSpec.Create("{/lines}", string.Empty, string.Empty),
+            RowSpec.Create(CellSpec.Text("Total"), CellSpec.Text(string.Empty), CellSpec.Formula("SUM(C3:C4)")));
+
+        const string json = @"{
+  ""lines"": [
+    { ""name"": ""Alpha"", ""qty"": 2, ""price"": 5 },
+    { ""name"": ""Beta"", ""qty"": 3, ""price"": 7 }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+        var rows = ReadSheetRows(output);
+
+        Assert.Equal(6, rows.Count);
+        Assert.Equal(new[] { "Name", "Value", "Calc" }, rows[0].Values);
+        Assert.Equal(new[] { "Alpha", "2", "B2*2" }, rows[1].Values);
+        Assert.Equal(new[] { string.Empty, "5", "B3*3" }, rows[2].Values);
+        Assert.Equal(new[] { "Beta", "3", "B4*2" }, rows[3].Values);
+        Assert.Equal(new[] { string.Empty, "7", "B5*3" }, rows[4].Values);
+        Assert.Equal(new[] { "Total", string.Empty, "SUM(C2:C5)" }, rows[5].Values);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = SpreadsheetDocument.Open(stream, false))
+        {
+            var worksheet = document.WorkbookPart!.WorksheetParts.First().Worksheet;
+            var mergeCells = worksheet.GetFirstChild<MergeCells>()!;
+            var mergedRefs = mergeCells.Elements<MergeCell>()
+                .Select(cell => cell.Reference!.Value!)
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(new[] { "A2:A3", "A4:A5" }, mergedRefs);
+        }
+    }
+
     private static byte[] CreateWorkbook(params RowSpec[] rows)
+    {
+        return CreateWorkbook(Array.Empty<string>(), rows);
+    }
+
+    private static byte[] CreateWorkbook(IReadOnlyList<string> mergedRanges, params RowSpec[] rows)
     {
         using (var stream = new MemoryStream())
         {
@@ -94,17 +221,17 @@ public class XlsxTemplateEngineTests
                 for (var rowIndex = 0; rowIndex < rows.Length; rowIndex++)
                 {
                     var row = new Row { RowIndex = (uint)(rowIndex + 1) };
-                    for (var columnIndex = 0; columnIndex < rows[rowIndex].Values.Length; columnIndex++)
+                    for (var columnIndex = 0; columnIndex < rows[rowIndex].Cells.Length; columnIndex++)
                     {
-                        var cell = CreateSharedStringCell(
-                            workbookPart,
-                            rows[rowIndex].Values[columnIndex],
-                            GetCellReference(columnIndex + 1, rowIndex + 1));
+                        var spec = rows[rowIndex].Cells[columnIndex];
+                        var cellReference = GetCellReference(columnIndex + 1, rowIndex + 1);
+                        var cell = spec.Kind == CellKind.Formula
+                            ? CreateFormulaCell(spec.Value, cellReference)
+                            : CreateSharedStringCell(workbookPart, spec.Value, cellReference);
 
-                        var styleIndex = rows[rowIndex].GetStyleIndex(columnIndex);
-                        if (styleIndex.HasValue)
+                        if (spec.StyleIndex.HasValue)
                         {
-                            cell.StyleIndex = styleIndex.Value;
+                            cell.StyleIndex = spec.StyleIndex.Value;
                         }
 
                         row.Append(cell);
@@ -113,9 +240,23 @@ public class XlsxTemplateEngineTests
                     sheetData.Append(row);
                 }
 
-                worksheetPart.Worksheet = new Worksheet(
-                    new SheetDimension { Reference = "A1:" + GetCellReference(rows[0].Values.Length, rows.Length) },
+                var worksheet = new Worksheet(
+                    new SheetDimension { Reference = rows.Length == 0 ? "A1" : "A1:" + GetCellReference(rows[0].Cells.Length, rows.Length) },
                     sheetData);
+
+                if (mergedRanges.Count > 0)
+                {
+                    var mergeCells = new MergeCells();
+                    foreach (var mergedRange in mergedRanges)
+                    {
+                        mergeCells.Append(new MergeCell { Reference = mergedRange });
+                    }
+
+                    mergeCells.Count = (uint)mergedRanges.Count;
+                    worksheet.Append(mergeCells);
+                }
+
+                worksheetPart.Worksheet = worksheet;
                 worksheetPart.Worksheet.Save();
 
                 workbookPart.Workbook.Append(
@@ -144,6 +285,16 @@ public class XlsxTemplateEngineTests
             CellReference = cellReference,
             DataType = CellValues.SharedString,
             CellValue = new CellValue(index.ToString(CultureInfo.InvariantCulture))
+        };
+    }
+
+    private static Cell CreateFormulaCell(string formula, string cellReference)
+    {
+        return new Cell
+        {
+            CellReference = cellReference,
+            CellFormula = new CellFormula(formula),
+            CellValue = new CellValue(string.Empty)
         };
     }
 
@@ -186,8 +337,26 @@ public class XlsxTemplateEngineTests
         return GetColumnName(columnIndex) + rowIndex.ToString(CultureInfo.InvariantCulture);
     }
 
+    private static string AnchorToCell(OneCellAnchor anchor)
+    {
+        var from = anchor.FromMarker!;
+        var column = int.Parse(from.ColumnId!.Text!, CultureInfo.InvariantCulture) + 1;
+        var row = int.Parse(from.RowId!.Text!, CultureInfo.InvariantCulture) + 1;
+        return GetCellReference(column, row);
+    }
+
+    private static long PixelsToEmu(int pixels)
+    {
+        return pixels * 9525L;
+    }
+
     private static string GetCellText(Cell cell, WorkbookPart workbookPart)
     {
+        if (cell.CellFormula != null)
+        {
+            return cell.CellFormula.Text ?? string.Empty;
+        }
+
         if (cell.DataType?.Value == CellValues.SharedString)
         {
             if (!int.TryParse(cell.CellValue?.InnerText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index))
@@ -231,31 +400,61 @@ public class XlsxTemplateEngineTests
         return new string(letters.ToArray());
     }
 
-    private readonly struct RowSpec
+    private static string GetTestAssetPath(string fileName)
     {
-        private RowSpec(string[] values, uint?[] styleIndexes)
+        var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
+        return Path.Combine(repoRoot, "tests", "NDocxTemplater.Tests", "Assets", fileName);
+    }
+
+    private static string FindRepoRoot(string startPath)
+    {
+        var current = new DirectoryInfo(startPath);
+        while (current != null)
         {
-            Values = values;
-            StyleIndexes = styleIndexes;
+            var solutionPath = Path.Combine(current.FullName, "NDocxTemplater.sln");
+            if (File.Exists(solutionPath))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
         }
 
-        public string[] Values { get; }
+        throw new InvalidOperationException("Cannot locate repository root from runtime path.");
+    }
 
-        public uint?[] StyleIndexes { get; }
+    private static string EscapeJsonString(string text)
+    {
+        return text
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"");
+    }
 
-        public static RowSpec Create(params string[] values)
+    private static bool ContainsDarkPixels(byte[] pngBytes)
+    {
+        using (var image = Image.Load<Rgba32>(pngBytes))
         {
-            return new RowSpec(values, new uint?[values.Length]);
+            for (var y = 0; y < image.Height; y++)
+            {
+                for (var x = 0; x < image.Width; x++)
+                {
+                    var pixel = image[x, y];
+                    if (pixel.A > 0 && (pixel.R < 200 || pixel.G < 200 || pixel.B < 200))
+                    {
+                        return true;
+                    }
+                }
+            }
         }
 
-        public static RowSpec Create(string[] values, uint styleIndex)
-        {
-            return new RowSpec(values, Enumerable.Repeat<uint?>(styleIndex, values.Length).ToArray());
-        }
+        return false;
+    }
 
-        public uint? GetStyleIndex(int columnIndex)
+    private static (int Width, int Height) GetImageSize(byte[] imageBytes)
+    {
+        using (var image = Image.Load<Rgba32>(imageBytes))
         {
-            return columnIndex >= 0 && columnIndex < StyleIndexes.Length ? StyleIndexes[columnIndex] : null;
+            return (image.Width, image.Height);
         }
     }
 
@@ -273,5 +472,62 @@ public class XlsxTemplateEngineTests
         public uint?[] StyleIndexes { get; }
 
         public CellValues?[] DataTypes { get; }
+    }
+
+    private readonly struct RowSpec
+    {
+        public RowSpec(CellSpec[] cells)
+        {
+            Cells = cells;
+        }
+
+        public CellSpec[] Cells { get; }
+
+        public static RowSpec Create(params string[] values)
+        {
+            return new RowSpec(values.Select(static value => CellSpec.Text(value)).ToArray());
+        }
+
+        public static RowSpec Create(string[] values, uint styleIndex)
+        {
+            return new RowSpec(values.Select(value => CellSpec.Text(value, styleIndex)).ToArray());
+        }
+
+        public static RowSpec Create(params CellSpec[] cells)
+        {
+            return new RowSpec(cells);
+        }
+    }
+
+    private enum CellKind
+    {
+        Text,
+        Formula
+    }
+
+    private readonly struct CellSpec
+    {
+        private CellSpec(string value, CellKind kind, uint? styleIndex)
+        {
+            Value = value;
+            Kind = kind;
+            StyleIndex = styleIndex;
+        }
+
+        public string Value { get; }
+
+        public CellKind Kind { get; }
+
+        public uint? StyleIndex { get; }
+
+        public static CellSpec Text(string value, uint? styleIndex = null)
+        {
+            return new CellSpec(value, CellKind.Text, styleIndex);
+        }
+
+        public static CellSpec Formula(string formula, uint? styleIndex = null)
+        {
+            return new CellSpec(formula, CellKind.Formula, styleIndex);
+        }
     }
 }

@@ -16,6 +16,8 @@
 - 循环：`{#expr} ... {/expr}`
 - 表格循环：把循环标记放在表格行中，可按行复制输出列表数据
 - `.xlsx` 工作表行循环：把循环/条件标记放在工作表行中，可按行复制输出列表数据，并保留模板行样式
+- `.xlsx` 工作表媒体占位符：在单元格中使用图片/条形码占位符，渲染为 worksheet drawing
+- `.xlsx` 模板行复制时支持合并单元格重建，以及公式中的相对行引用修正
 - 支持 Word 将标签拆分到多个 Run/Text 节点后的渲染（包含表格单元格内格式表达式）
 - 图片标签（参考 docxtemplater image tag 风格）
   - inline：`{%imagePath}`
@@ -136,6 +138,13 @@ VIP 客户
 - 控制标记行应只有一个非空单元格包含完整标记，其他单元格留空
 - 循环块会复制中间模板行，并保留模板行/单元格样式
 - 普通单元格内联表达式与 `.docx` 使用同一套路径和管道语法
+- 图片/条形码占位符可放在单元格中，建议独占一个单元格：
+  - 图片：`{%pathImage}`、`{%%pathImage}`
+  - 条形码：`{%barcode:barcodes.ean13;type=ean13;width=220;height=80}`
+- 模板行被循环复制时：
+  - 行内公式会按最终行号重写相对引用
+  - 模板中的合并单元格区域会随复制后的行块一起展开重建
+  - 位于循环块之后的汇总公式，若引用了循环块行范围，也会按最终输出行范围扩展
 
 ## 快速使用
 
@@ -200,6 +209,8 @@ examples/
   11-images-file-and-datauri-scaling/
   12-barcodes/
   13-xlsx-row-loop/
+  14-xlsx-media-placeholders/
+  15-xlsx-merged-cells-and-formulas/
 ```
 
 各示例说明：
@@ -218,6 +229,9 @@ examples/
   - 该示例额外包含 `chart.png`（用于文件路径模式）
 - `12-barcodes`：由模板占位符指定数据源路径与条码参数（类型、尺寸、边距）
 - `13-xlsx-row-loop`：`.xlsx` 工作表按行循环、条件行和单元格表达式替换
+- `14-xlsx-media-placeholders`：`.xlsx` 工作表中的图片/条形码占位符，包含文件路径、data URI 和条形码参数
+  - 该示例额外包含 `chart.png`（用于文件路径模式）
+- `15-xlsx-merged-cells-and-formulas`：`.xlsx` 循环块中的跨行合并单元格，以及模板复制后的公式引用修正
 
 如需重新生成示例资产：
 
@@ -231,7 +245,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、`.xlsx` 工作表行循环/条件/样式保留、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、`.xlsx` 工作表行循环/条件/样式保留、`.xlsx` 图片/条形码占位符、`.xlsx` 合并单元格与公式引用修正、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 
