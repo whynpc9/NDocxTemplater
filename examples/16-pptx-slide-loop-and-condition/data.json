@@ -1,0 +1,11 @@
+{
+  "report": {
+    "title": "Quarterly Review"
+  },
+  "users": [
+    { "name": "Alice", "amount": 12.5 },
+    { "name": "Bob", "amount": 99 }
+  ],
+  "showSummary": true,
+  "summaryText": "All regions green"
+}

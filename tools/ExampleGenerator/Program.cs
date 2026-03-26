@@ -5,6 +5,8 @@ using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using NDocxTemplater;
+using A = DocumentFormat.OpenXml.Drawing;
+using P = DocumentFormat.OpenXml.Presentation;
 using S = DocumentFormat.OpenXml.Spreadsheet;
 
 var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
@@ -345,6 +347,34 @@ GenerateWorkbookExample(
 
 GenerateWorkbookMediaExample(examplesRoot, realChartAssetPath);
 GenerateWorkbookMergeAndFormulaExample(examplesRoot);
+GeneratePresentationExample(
+    examplesRoot,
+    "16-pptx-slide-loop-and-condition",
+    """
+    {
+      "report": {
+        "title": "Quarterly Review"
+      },
+      "users": [
+        { "name": "Alice", "amount": 12.5 },
+        { "name": "Bob", "amount": 99 }
+      ],
+      "showSummary": true,
+      "summaryText": "All regions green"
+    }
+    """,
+    """
+    using NDocxTemplater;
+
+    var engine = new PptxTemplateEngine();
+    var templateBytes = File.ReadAllBytes("template.pptx");
+    var json = File.ReadAllText("data.json");
+    var output = engine.Render(templateBytes, json);
+    File.WriteAllBytes("output.pptx", output);
+    """,
+    PresentationSlideSpec.Create("Title {report.title}"),
+    PresentationSlideSpec.Create("{:users}", "User {name}", "Amount {amount|format:number:0.00}"),
+    PresentationSlideSpec.Create("{:showSummary}", "Summary {summaryText}"));
 
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
@@ -613,6 +643,32 @@ static void GenerateWorkbookMergeAndFormulaExample(string examplesRoot)
     File.WriteAllBytes(outputPath, outputBytes);
 }
 
+static void GeneratePresentationExample(
+    string examplesRoot,
+    string name,
+    string json,
+    string sampleCode,
+    params PresentationSlideSpec[] slides)
+{
+    var dir = Path.Combine(examplesRoot, name);
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.pptx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.pptx");
+    var codePath = Path.Combine(dir, "example.cs");
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreatePresentationTemplate(slides);
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new PptxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    File.WriteAllBytes(outputPath, outputBytes);
+}
+
 static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
 {
     using var stream = new MemoryStream();
@@ -845,6 +901,199 @@ static S.Cell CreateWorkbookFormulaCell(string formula, string cellReference)
     };
 }
 
+static byte[] CreatePresentationTemplate(params PresentationSlideSpec[] slides)
+{
+    using var stream = new MemoryStream();
+    using (var document = PresentationDocument.Create(stream, PresentationDocumentType.Presentation, true))
+    {
+        var presentationPart = document.AddPresentationPart();
+        presentationPart.Presentation = new P.Presentation();
+
+        var slideMasterPart = presentationPart.AddNewPart<SlideMasterPart>("rId1");
+        var themePart = slideMasterPart.AddNewPart<ThemePart>("rId5");
+        themePart.Theme = CreatePresentationTheme();
+        themePart.Theme.Save();
+
+        var slideLayoutPart = slideMasterPart.AddNewPart<SlideLayoutPart>("rId1");
+        slideLayoutPart.SlideLayout = new P.SlideLayout(
+            new P.CommonSlideData(CreatePresentationShapeTree()),
+            new P.ColorMapOverride(new A.MasterColorMapping()));
+        slideLayoutPart.SlideLayout.Save();
+
+        slideMasterPart.SlideMaster = new P.SlideMaster(
+            new P.CommonSlideData(CreatePresentationShapeTree()),
+            new P.ColorMap
+            {
+                Background1 = A.ColorSchemeIndexValues.Light1,
+                Text1 = A.ColorSchemeIndexValues.Dark1,
+                Background2 = A.ColorSchemeIndexValues.Light2,
+                Text2 = A.ColorSchemeIndexValues.Dark2,
+                Accent1 = A.ColorSchemeIndexValues.Accent1,
+                Accent2 = A.ColorSchemeIndexValues.Accent2,
+                Accent3 = A.ColorSchemeIndexValues.Accent3,
+                Accent4 = A.ColorSchemeIndexValues.Accent4,
+                Accent5 = A.ColorSchemeIndexValues.Accent5,
+                Accent6 = A.ColorSchemeIndexValues.Accent6,
+                Hyperlink = A.ColorSchemeIndexValues.Hyperlink,
+                FollowedHyperlink = A.ColorSchemeIndexValues.FollowedHyperlink
+            },
+            new P.SlideLayoutIdList(new P.SlideLayoutId { Id = 2147483649U, RelationshipId = "rId1" }),
+            new P.TextStyles(new P.TitleStyle(), new P.BodyStyle(), new P.OtherStyle()));
+        slideMasterPart.SlideMaster.Save();
+
+        presentationPart.Presentation.SlideMasterIdList = new P.SlideMasterIdList(
+            new P.SlideMasterId { Id = 2147483648U, RelationshipId = "rId1" });
+
+        var slideIdList = new P.SlideIdList();
+        for (var index = 0; index < slides.Length; index++)
+        {
+            var relationshipId = "rIdSlide" + (index + 1).ToString();
+            var slidePart = presentationPart.AddNewPart<SlidePart>(relationshipId);
+            slidePart.AddPart(slideLayoutPart, "rId1");
+            slidePart.Slide = new P.Slide(
+                new P.CommonSlideData(CreatePresentationShapeTree(slides[index].Texts)),
+                new P.ColorMapOverride(new A.MasterColorMapping()));
+            slidePart.Slide.Save();
+
+            slideIdList.Append(new P.SlideId
+            {
+                Id = (uint)(256 + index),
+                RelationshipId = relationshipId
+            });
+        }
+
+        presentationPart.Presentation.SlideIdList = slideIdList;
+        presentationPart.Presentation.SlideSize = new P.SlideSize { Cx = 9144000, Cy = 6858000 };
+        presentationPart.Presentation.NotesSize = new P.NotesSize { Cx = 6858000, Cy = 9144000 };
+        presentationPart.Presentation.Save();
+    }
+
+    return stream.ToArray();
+}
+
+static P.ShapeTree CreatePresentationShapeTree(params string[] texts)
+{
+    var shapeTree = new P.ShapeTree(
+        new P.NonVisualGroupShapeProperties(
+            new P.NonVisualDrawingProperties { Id = 1U, Name = string.Empty },
+            new P.NonVisualGroupShapeDrawingProperties(),
+            new P.ApplicationNonVisualDrawingProperties()),
+        new P.GroupShapeProperties(new A.TransformGroup()));
+
+    for (var index = 0; index < texts.Length; index++)
+    {
+        shapeTree.Append(CreatePresentationTextShape((uint)(index + 2), "TextBox " + (index + 1), texts[index], index));
+    }
+
+    return shapeTree;
+}
+
+static P.Shape CreatePresentationTextShape(uint id, string name, string text, int order)
+{
+    var offsetY = 400000L + (order * 900000L);
+    return new P.Shape(
+        new P.NonVisualShapeProperties(
+            new P.NonVisualDrawingProperties { Id = id, Name = name },
+            new P.NonVisualShapeDrawingProperties(new A.ShapeLocks { NoGrouping = true }),
+            new P.ApplicationNonVisualDrawingProperties()),
+        new P.ShapeProperties(
+            new A.Transform2D(
+                new A.Offset { X = 400000L, Y = offsetY },
+                new A.Extents { Cx = 7600000L, Cy = 700000L }),
+            new A.PresetGeometry(new A.AdjustValueList()) { Preset = A.ShapeTypeValues.Rectangle }),
+        new P.TextBody(
+            new A.BodyProperties(),
+            new A.ListStyle(),
+            new A.Paragraph(
+                new A.Run(new A.Text(text)),
+                new A.EndParagraphRunProperties())));
+}
+
+static A.Theme CreatePresentationTheme()
+{
+    var theme = new A.Theme { Name = "NDocxTemplater Theme" };
+    theme.Append(new A.ThemeElements(
+        new A.ColorScheme(
+            new A.Dark1Color(new A.SystemColor { Val = A.SystemColorValues.WindowText, LastColor = "000000" }),
+            new A.Light1Color(new A.SystemColor { Val = A.SystemColorValues.Window, LastColor = "FFFFFF" }),
+            new A.Dark2Color(new A.RgbColorModelHex { Val = "1F497D" }),
+            new A.Light2Color(new A.RgbColorModelHex { Val = "EEECE1" }),
+            new A.Accent1Color(new A.RgbColorModelHex { Val = "4F81BD" }),
+            new A.Accent2Color(new A.RgbColorModelHex { Val = "C0504D" }),
+            new A.Accent3Color(new A.RgbColorModelHex { Val = "9BBB59" }),
+            new A.Accent4Color(new A.RgbColorModelHex { Val = "8064A2" }),
+            new A.Accent5Color(new A.RgbColorModelHex { Val = "4BACC6" }),
+            new A.Accent6Color(new A.RgbColorModelHex { Val = "F79646" }),
+            new A.Hyperlink(new A.RgbColorModelHex { Val = "0000FF" }),
+            new A.FollowedHyperlinkColor(new A.RgbColorModelHex { Val = "800080" }))
+        { Name = "Office" },
+        new A.FontScheme(
+            new A.MajorFont(
+                new A.LatinFont { Typeface = "Calibri" },
+                new A.EastAsianFont { Typeface = string.Empty },
+                new A.ComplexScriptFont { Typeface = string.Empty }),
+            new A.MinorFont(
+                new A.LatinFont { Typeface = "Calibri" },
+                new A.EastAsianFont { Typeface = string.Empty },
+                new A.ComplexScriptFont { Typeface = string.Empty }))
+        { Name = "Office" },
+        new A.FormatScheme(
+            new A.FillStyleList(
+                new A.SolidFill(new A.SchemeColor { Val = A.SchemeColorValues.PhColor }),
+                new A.GradientFill(
+                    new A.GradientStopList(
+                        new A.GradientStop(new A.SchemeColor(new A.Tint { Val = 50000 }, new A.SaturationModulation { Val = 300000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 0 },
+                        new A.GradientStop(new A.SchemeColor(new A.Tint { Val = 37000 }, new A.SaturationModulation { Val = 300000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 35000 },
+                        new A.GradientStop(new A.SchemeColor(new A.Tint { Val = 15000 }, new A.SaturationModulation { Val = 350000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 100000 }),
+                    new A.LinearGradientFill { Angle = 16200000, Scaled = true }),
+                new A.GradientFill(
+                    new A.GradientStopList(
+                        new A.GradientStop(new A.SchemeColor(new A.Shade { Val = 51000 }, new A.SaturationModulation { Val = 130000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 0 },
+                        new A.GradientStop(new A.SchemeColor(new A.Shade { Val = 93000 }, new A.SaturationModulation { Val = 130000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 80000 },
+                        new A.GradientStop(new A.SchemeColor(new A.Shade { Val = 94000 }, new A.SaturationModulation { Val = 135000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 100000 }),
+                    new A.LinearGradientFill { Angle = 16200000, Scaled = false })),
+            new A.LineStyleList(
+                new A.Outline(
+                    new A.SolidFill(new A.SchemeColor { Val = A.SchemeColorValues.PhColor }),
+                    new A.PresetDash { Val = A.PresetLineDashValues.Solid })
+                { Width = 9525, CapType = A.LineCapValues.Flat, CompoundLineType = A.CompoundLineValues.Single, Alignment = A.PenAlignmentValues.Center },
+                new A.Outline(
+                    new A.SolidFill(new A.SchemeColor { Val = A.SchemeColorValues.PhColor }),
+                    new A.PresetDash { Val = A.PresetLineDashValues.Solid })
+                { Width = 25400, CapType = A.LineCapValues.Flat, CompoundLineType = A.CompoundLineValues.Single, Alignment = A.PenAlignmentValues.Center },
+                new A.Outline(
+                    new A.SolidFill(new A.SchemeColor { Val = A.SchemeColorValues.PhColor }),
+                    new A.PresetDash { Val = A.PresetLineDashValues.Solid })
+                { Width = 38100, CapType = A.LineCapValues.Flat, CompoundLineType = A.CompoundLineValues.Single, Alignment = A.PenAlignmentValues.Center }),
+            new A.EffectStyleList(
+                new A.EffectStyle(new A.EffectList()),
+                new A.EffectStyle(new A.EffectList()),
+                new A.EffectStyle(
+                    new A.EffectList(
+                        new A.OuterShadow
+                        {
+                            BlurRadius = 40000,
+                            Distance = 20000,
+                            Direction = 5400000,
+                            RotateWithShape = false
+                        }))),
+            new A.BackgroundFillStyleList(
+                new A.SolidFill(new A.SchemeColor { Val = A.SchemeColorValues.PhColor }),
+                new A.GradientFill(
+                    new A.GradientStopList(
+                        new A.GradientStop(new A.SchemeColor(new A.Tint { Val = 40000 }, new A.SaturationModulation { Val = 350000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 0 },
+                        new A.GradientStop(new A.SchemeColor(new A.Tint { Val = 45000 }, new A.Shade { Val = 99000 }, new A.SaturationModulation { Val = 350000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 40000 },
+                        new A.GradientStop(new A.SchemeColor(new A.Shade { Val = 20000 }, new A.SaturationModulation { Val = 255000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 100000 }),
+                    new A.PathGradientFill { Path = A.PathShadeValues.Circle }),
+                new A.GradientFill(
+                    new A.GradientStopList(
+                        new A.GradientStop(new A.SchemeColor(new A.Tint { Val = 80000 }, new A.SaturationModulation { Val = 300000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 0 },
+                        new A.GradientStop(new A.SchemeColor(new A.Shade { Val = 30000 }, new A.SaturationModulation { Val = 200000 }) { Val = A.SchemeColorValues.PhColor }) { Position = 100000 }),
+                    new A.PathGradientFill { Path = A.PathShadeValues.Circle })))
+        { Name = "Office" }));
+    return theme;
+}
+
 static string GetWorkbookCellReference(int columnIndex, int rowIndex)
 {
     return GetWorkbookColumnName(columnIndex) + rowIndex.ToString();
@@ -936,5 +1185,20 @@ readonly struct WorkbookCellSpec
     public static WorkbookCellSpec Formula(string formula, uint? styleIndex = null)
     {
         return new WorkbookCellSpec(formula, true, styleIndex);
+    }
+}
+
+readonly struct PresentationSlideSpec
+{
+    public PresentationSlideSpec(string[] texts)
+    {
+        Texts = texts;
+    }
+
+    public string[] Texts { get; }
+
+    public static PresentationSlideSpec Create(params string[] texts)
+    {
+        return new PresentationSlideSpec(texts);
     }
 }
