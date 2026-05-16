@@ -1,0 +1,9 @@
+{
+  "patient": {
+    "name": "Alice"
+  },
+  "items": [
+    { "name": "Alpha" },
+    { "name": "Beta" }
+  ]
+}

@@ -153,6 +153,7 @@ internal sealed class SpreadsheetTemplateRenderer
         }
 
         SpreadsheetMergeHelper.RebuildMergeCells(worksheetPart.Worksheet, originalMergeReferences, rowMapping);
+        SpreadsheetRangeMaintenanceHelper.UpdateWorksheetRanges(_workbookPart, worksheetPart, rowMapping);
         SpreadsheetDrawingHelper.RenderMedia(worksheetPart, renderedRows, NextDrawingObjectId);
         SpreadsheetCellHelper.UpdateSheetDimension(worksheetPart.Worksheet, sheetData);
         worksheetPart.Worksheet.Save();
@@ -967,6 +968,102 @@ internal static class SpreadsheetDrawingHelper
     {
         var safePixels = pixels <= 0 ? 1 : pixels;
         return safePixels * EmusPerPixel;
+    }
+}
+
+internal static class SpreadsheetRangeMaintenanceHelper
+{
+    public static void UpdateWorksheetRanges(WorkbookPart workbookPart, WorksheetPart worksheetPart, SpreadsheetRowMapping mapping)
+    {
+        UpdateWorksheetAutoFilter(worksheetPart.Worksheet, mapping);
+        UpdateTableDefinitions(worksheetPart, mapping);
+        UpdateDefinedNames(workbookPart, mapping);
+        RemoveCalculationChain(workbookPart);
+    }
+
+    private static void UpdateWorksheetAutoFilter(S.Worksheet worksheet, SpreadsheetRowMapping mapping)
+    {
+        var autoFilter = worksheet.GetFirstChild<S.AutoFilter>();
+        if (autoFilter?.Reference == null)
+        {
+            return;
+        }
+
+        autoFilter.Reference = RewriteRangeReference(autoFilter.Reference.Value, mapping);
+    }
+
+    private static void UpdateTableDefinitions(WorksheetPart worksheetPart, SpreadsheetRowMapping mapping)
+    {
+        foreach (var tableDefinitionPart in worksheetPart.TableDefinitionParts)
+        {
+            var table = tableDefinitionPart.Table;
+            if (table == null)
+            {
+                continue;
+            }
+
+            if (table.Reference != null)
+            {
+                table.Reference = RewriteRangeReference(table.Reference.Value, mapping);
+            }
+
+            if (table.AutoFilter?.Reference != null)
+            {
+                table.AutoFilter.Reference = RewriteRangeReference(table.AutoFilter.Reference.Value, mapping);
+            }
+
+            table.Save();
+        }
+    }
+
+    private static void UpdateDefinedNames(WorkbookPart workbookPart, SpreadsheetRowMapping mapping)
+    {
+        var definedNames = workbookPart.Workbook.DefinedNames;
+        if (definedNames == null)
+        {
+            return;
+        }
+
+        foreach (var definedName in definedNames.Elements<S.DefinedName>())
+        {
+            if (string.IsNullOrWhiteSpace(definedName.Text))
+            {
+                continue;
+            }
+
+            definedName.Text = RewriteFormulaLikeRanges(definedName.Text!, mapping);
+        }
+    }
+
+    private static void RemoveCalculationChain(WorkbookPart workbookPart)
+    {
+        if (workbookPart.CalculationChainPart != null)
+        {
+            workbookPart.DeletePart(workbookPart.CalculationChainPart);
+        }
+    }
+
+    private static string RewriteFormulaLikeRanges(string text, SpreadsheetRowMapping mapping)
+    {
+        return Regex.Replace(
+            text,
+            @"(?<range>(?:(?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!)?\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+)",
+            match => RewriteRangeReference(match.Groups["range"].Value, mapping));
+    }
+
+    private static string RewriteRangeReference(string? reference, SpreadsheetRowMapping mapping)
+    {
+        if (!SpreadsheetRangeReference.TryParse(reference ?? string.Empty, out var range))
+        {
+            return reference ?? string.Empty;
+        }
+
+        if (!mapping.TryResolveRangeGlobal(range.Start.RowIndex, range.End.RowIndex, out var startRow, out var endRow))
+        {
+            return reference ?? string.Empty;
+        }
+
+        return range.WithRows(startRow, endRow);
     }
 }
 

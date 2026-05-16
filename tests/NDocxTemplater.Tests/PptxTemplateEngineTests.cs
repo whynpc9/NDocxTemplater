@@ -12,6 +12,9 @@ namespace NDocxTemplater.Tests;
 
 public class PptxTemplateEngineTests
 {
+    private const string TinyPngDataUri =
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8B9pYAAAAASUVORK5CYII=";
+
     private readonly PptxTemplateEngine _engine = new PptxTemplateEngine();
 
     [Fact]
@@ -85,6 +88,46 @@ public class PptxTemplateEngineTests
         Assert.Equal(new[] { "Title May Report", "Missing {report.missing}" }, slides[0]);
         var warning = Assert.Single(warnings);
         Assert.Equal("report.missing", warning.Expression);
+    }
+
+    [Fact]
+    public void Render_ReplacesSlideMediaPlaceholders_WithPictures()
+    {
+        var template = CreatePresentation(
+            SlideSpec.Create("Title {report.title}", "{%logo}", "{%barcode:code;type=code128;width=180;height=60}"));
+
+        var json = @"{
+  ""report"": { ""title"": ""Media Report"" },
+  ""logo"": {
+    ""src"": """ + TinyPngDataUri + @""",
+    ""width"": 40,
+    ""height"": 20
+  },
+  ""code"": ""A20260303001""
+}";
+
+        var output = _engine.Render(template, json);
+        var slides = ReadSlideTexts(output);
+
+        Assert.Single(slides);
+        Assert.Equal(new[] { "Title Media Report" }, slides[0].Where(static text => !string.IsNullOrWhiteSpace(text)).ToArray());
+
+        using (var stream = new MemoryStream(output))
+        using (var document = PresentationDocument.Open(stream, false))
+        {
+            var slidePart = (SlidePart)document.PresentationPart!.GetPartById(
+                document.PresentationPart.Presentation.SlideIdList!.Elements<P.SlideId>().Single().RelationshipId!);
+            var pictures = slidePart.Slide.Descendants<P.Picture>().ToArray();
+            var extents = pictures
+                .Select(static picture => picture.ShapeProperties!.GetFirstChild<A.Transform2D>()!.Extents!)
+                .Select(static extents => (extents.Cx!.Value, extents.Cy!.Value))
+                .ToArray();
+
+            Assert.Equal(2, pictures.Length);
+            Assert.Equal(2, slidePart.ImageParts.Count());
+            Assert.Contains((40 * 9525L, 20 * 9525L), extents);
+            Assert.Contains((180 * 9525L, 60 * 9525L), extents);
+        }
     }
 
     private static byte[] CreatePresentation(params SlideSpec[] slides)

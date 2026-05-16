@@ -218,6 +218,43 @@ public class XlsxTemplateEngineTests
         }
     }
 
+    [Fact]
+    public void Render_UpdatesTablesFiltersDefinedNames_AndRemovesCalcChain()
+    {
+        var template = CreateWorkbookWithRangeMetadata();
+
+        const string json = @"{
+  ""lines"": [
+    { ""name"": ""Alpha"", ""amount"": 10 },
+    { ""name"": ""Beta"", ""amount"": 20 }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+        var rows = ReadSheetRows(output);
+
+        Assert.Equal(4, rows.Count);
+        Assert.Equal(new[] { "Name", "Amount", "Status" }, rows[0].Values);
+        Assert.Equal(new[] { "Alpha", "10", "B2*2" }, rows[1].Values);
+        Assert.Equal(new[] { "Beta", "20", "B3*2" }, rows[2].Values);
+        Assert.Equal(new[] { "Total", string.Empty, "SUM(C2:C3)" }, rows[3].Values);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = SpreadsheetDocument.Open(stream, false))
+        {
+            var workbookPart = document.WorkbookPart!;
+            var worksheetPart = workbookPart.WorksheetParts.First();
+            var table = worksheetPart.TableDefinitionParts.Single().Table;
+            var definedName = workbookPart.Workbook.DefinedNames!.Elements<DefinedName>().Single();
+
+            Assert.Equal("A1:C4", worksheetPart.Worksheet.GetFirstChild<AutoFilter>()!.Reference!.Value);
+            Assert.Equal("A1:C4", table.Reference!.Value);
+            Assert.Equal("A1:C4", table.AutoFilter!.Reference!.Value);
+            Assert.Equal("'Report'!$A$1:$C$4", definedName.Text);
+            Assert.Null(workbookPart.CalculationChainPart);
+        }
+    }
+
     private static byte[] CreateWorkbook(params RowSpec[] rows)
     {
         return CreateWorkbook(Array.Empty<string>(), rows);
@@ -296,6 +333,104 @@ public class XlsxTemplateEngineTests
 
             return stream.ToArray();
         }
+    }
+
+    private static byte[] CreateWorkbookWithRangeMetadata()
+    {
+        using (var stream = new MemoryStream())
+        {
+            using (var document = SpreadsheetDocument.Create(stream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+            {
+                var workbookPart = document.AddWorkbookPart();
+                workbookPart.Workbook = new Workbook();
+
+                var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+                sharedStringPart.SharedStringTable = new SharedStringTable();
+
+                var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+                var sheetData = new SheetData(
+                    CreateRow(workbookPart, 1, "Name", "Amount", "Status"),
+                    CreateRow(workbookPart, 2, "{#lines}", string.Empty, string.Empty),
+                    CreateRow(
+                        3,
+                        CreateSharedStringCell(workbookPart, "{name}", "A3"),
+                        CreateSharedStringCell(workbookPart, "{amount}", "B3"),
+                        CreateFormulaCell("B3*2", "C3")),
+                    CreateRow(workbookPart, 4, "{/lines}", string.Empty, string.Empty),
+                    CreateRow(
+                        5,
+                        CreateSharedStringCell(workbookPart, "Total", "A5"),
+                        CreateSharedStringCell(workbookPart, string.Empty, "B5"),
+                        CreateFormulaCell("SUM(C3:C3)", "C5")));
+
+                worksheetPart.Worksheet = new Worksheet(
+                    new SheetDimension { Reference = "A1:C5" },
+                    new AutoFilter { Reference = "A1:C5" },
+                    sheetData);
+
+                var tableDefinitionPart = worksheetPart.AddNewPart<TableDefinitionPart>("rIdTable1");
+                tableDefinitionPart.Table = new Table
+                {
+                    Id = 1U,
+                    Name = "ReportTable",
+                    DisplayName = "ReportTable",
+                    Reference = "A1:C5",
+                    TotalsRowShown = false
+                };
+                tableDefinitionPart.Table.Append(new AutoFilter { Reference = "A1:C5" });
+                tableDefinitionPart.Table.Append(new TableColumns(
+                    new TableColumn { Id = 1U, Name = "Name" },
+                    new TableColumn { Id = 2U, Name = "Amount" },
+                    new TableColumn { Id = 3U, Name = "Status" })
+                { Count = 3U });
+                tableDefinitionPart.Table.Save();
+
+                worksheetPart.Worksheet.Append(new TableParts(
+                    new TablePart { Id = worksheetPart.GetIdOfPart(tableDefinitionPart) })
+                { Count = 1U });
+                worksheetPart.Worksheet.Save();
+
+                workbookPart.Workbook.Append(
+                    new Sheets(
+                        new Sheet
+                        {
+                            Id = workbookPart.GetIdOfPart(worksheetPart),
+                            SheetId = 1U,
+                            Name = "Report"
+                        }),
+                    new DefinedNames(
+                        new DefinedName("'Report'!$A$1:$C$5")
+                        {
+                            Name = "ReportRange"
+                        }));
+
+                var calcChainPart = workbookPart.AddNewPart<CalculationChainPart>();
+                calcChainPart.CalculationChain = new CalculationChain(new CalculationCell { CellReference = "C5", SheetId = 1 });
+                calcChainPart.CalculationChain.Save();
+
+                workbookPart.Workbook.Save();
+            }
+
+            return stream.ToArray();
+        }
+    }
+
+    private static Row CreateRow(WorkbookPart workbookPart, int rowIndex, params string[] values)
+    {
+        return CreateRow(
+            rowIndex,
+            values.Select((value, index) => CreateSharedStringCell(workbookPart, value, GetCellReference(index + 1, rowIndex))).ToArray());
+    }
+
+    private static Row CreateRow(int rowIndex, params Cell[] cells)
+    {
+        var row = new Row { RowIndex = (uint)rowIndex };
+        foreach (var cell in cells)
+        {
+            row.Append(cell);
+        }
+
+        return row;
     }
 
     private static Cell CreateSharedStringCell(WorkbookPart workbookPart, string text, string cellReference)
