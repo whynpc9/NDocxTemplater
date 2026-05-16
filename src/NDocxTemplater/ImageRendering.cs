@@ -149,7 +149,7 @@ internal static class TemplateMediaResolver
         }
 
         var imageToken = ExpressionEvaluator.Evaluate(expression, context);
-        return ImageInputResolver.ResolveMany(imageToken);
+        return ImageInputResolver.ResolveMany(imageToken, context.Options);
     }
 }
 
@@ -201,7 +201,7 @@ internal static class ImageTagParser
 
 internal static class ImageInputResolver
 {
-    public static IEnumerable<ImagePayload> ResolveMany(JToken? token)
+    public static IEnumerable<ImagePayload> ResolveMany(JToken? token, RenderOptions options)
     {
         if (JsonNodeHelpers.IsNull(token))
         {
@@ -210,13 +210,13 @@ internal static class ImageInputResolver
 
         if (token is JArray array)
         {
-            return array.Where(static item => item != null).Select(static item => ResolveSingle(item!)).ToList();
+            return array.Where(static item => item != null).Select(item => ResolveSingle(item!, options)).ToList();
         }
 
-        return new[] { ResolveSingle(token!) };
+        return new[] { ResolveSingle(token!, options) };
     }
 
-    private static ImagePayload ResolveSingle(JToken token)
+    private static ImagePayload ResolveSingle(JToken token, RenderOptions options)
     {
         string? source = null;
         int? width = null;
@@ -254,7 +254,7 @@ internal static class ImageInputResolver
             throw new InvalidOperationException("Image value must be a string or object containing src/data/base64/path.");
         }
 
-        var imageBytes = ParseImageBytes(sourceText!, out var mimeHint, out var extensionHint);
+        var imageBytes = ParseImageBytes(sourceText!, options, out var mimeHint, out var extensionHint);
         var imagePartType = DetectImagePartType(imageBytes, mimeHint, extensionHint);
 
         var inferredSize = ImageBinaryInspector.TryReadPixelSize(imageBytes);
@@ -270,7 +270,7 @@ internal static class ImageInputResolver
         return new ImagePayload(imageBytes, imagePartType, resolvedSize.Width, resolvedSize.Height);
     }
 
-    private static byte[] ParseImageBytes(string source, out string? mimeHint, out string? extensionHint)
+    private static byte[] ParseImageBytes(string source, RenderOptions options, out string? mimeHint, out string? extensionHint)
     {
         mimeHint = null;
         extensionHint = null;
@@ -301,10 +301,11 @@ internal static class ImageInputResolver
             return Convert.FromBase64String(payload);
         }
 
-        if (File.Exists(source))
+        var resolvedPath = ResolveImagePath(source, options);
+        if (resolvedPath != null)
         {
-            extensionHint = Path.GetExtension(source);
-            return File.ReadAllBytes(source);
+            extensionHint = Path.GetExtension(resolvedPath);
+            return File.ReadAllBytes(resolvedPath);
         }
 
         try
@@ -316,6 +317,22 @@ internal static class ImageInputResolver
             throw new InvalidOperationException(
                 "Image string value must be base64, base64 data URI, or an existing file path.");
         }
+    }
+
+    private static string? ResolveImagePath(string source, RenderOptions options)
+    {
+        if (File.Exists(source))
+        {
+            return source;
+        }
+
+        if (Path.IsPathRooted(source) || string.IsNullOrWhiteSpace(options.BaseDirectory))
+        {
+            return null;
+        }
+
+        var candidate = Path.Combine(options.BaseDirectory!, source);
+        return File.Exists(candidate) ? candidate : null;
     }
 
     private static PartTypeInfo DetectImagePartType(byte[] bytes, string? mimeHint, string? extensionHint)

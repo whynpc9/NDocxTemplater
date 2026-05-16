@@ -64,6 +64,29 @@ public class PptxTemplateEngineTests
         Assert.Equal(new[] { "Cover May Report" }, slides[0]);
     }
 
+    [Fact]
+    public void Render_CanKeepMissingSlideTextTags()
+    {
+        var template = CreatePresentation(
+            SlideSpec.Create("Title {report.title}", "Missing {report.missing}"));
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            WarningHandler = warnings.Add
+        };
+
+        const string json = @"{ ""report"": { ""title"": ""May Report"" } }";
+
+        var output = _engine.Render(template, json, options);
+        var slides = ReadSlideTexts(output);
+
+        Assert.Single(slides);
+        Assert.Equal(new[] { "Title May Report", "Missing {report.missing}" }, slides[0]);
+        var warning = Assert.Single(warnings);
+        Assert.Equal("report.missing", warning.Expression);
+    }
+
     private static byte[] CreatePresentation(params SlideSpec[] slides)
     {
         using (var stream = new MemoryStream())

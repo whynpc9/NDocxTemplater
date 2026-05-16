@@ -21,6 +21,8 @@
 - `.pptx` slide 级循环/条件：在单个 slide 上使用 `{:expr}`，数组会复制 slide，falsy 会移除 slide，truthy 会保留一次
 - `.pptx` 幻灯片文本占位符：在文本框/形状文字中使用与 `.docx` 相同的路径和格式表达式
 - 支持 Word 将标签拆分到多个 Run/Text 节点后的渲染（包含表格单元格内格式表达式）
+- 共享模板内核：DOCX/XLSX/PPTX 复用同一套路径解析、表达式管道、上下文与控制标签语义
+- 渲染诊断选项：通过 `RenderOptions` 控制缺失值行为、收集 warning、设置格式化区域性，并为相对图片路径指定基准目录
 - 图片标签（参考 docxtemplater image tag 风格）
   - inline：`{%imagePath}`
   - block/居中：`{%%imagePath}`
@@ -213,6 +215,36 @@ var outputBytes = engine.Render(templateBytes, json);
 File.WriteAllBytes("output.pptx", outputBytes);
 ```
 
+### RenderOptions
+
+默认行为保持兼容：缺失值输出空字符串，格式化使用 `InvariantCulture`，相对图片路径按当前工作目录解析。
+
+如需模板调试或更严格的生产渲染，可以传入 `RenderOptions`：
+
+```csharp
+using NDocxTemplater;
+
+var warnings = new List<RenderWarning>();
+var options = new RenderOptions
+{
+    MissingValueBehavior = MissingValueBehavior.KeepTag,
+    Culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE"),
+    BaseDirectory = AppContext.BaseDirectory,
+    WarningHandler = warnings.Add
+};
+
+var engine = new DocxTemplateEngine();
+var outputBytes = engine.Render(templateBytes, json, options);
+```
+
+缺失值行为：
+
+- `MissingValueBehavior.Empty`：默认值，缺失标签渲染为空字符串
+- `MissingValueBehavior.KeepTag`：缺失标签保持原样，便于人工检查模板
+- `MissingValueBehavior.Throw`：遇到缺失表达式立即抛出异常
+
+`RenderWarning` 当前用于报告缺失表达式，包含 `Code`、`Message` 和 `Expression`。
+
 ## NuGet Package
 
 - Package ID: `NDocxTemplater`
@@ -253,6 +285,7 @@ examples/
   14-xlsx-media-placeholders/
   15-xlsx-merged-cells-and-formulas/
   16-pptx-slide-loop-and-condition/
+  17-render-options-diagnostics/
 ```
 
 各示例说明：
@@ -275,6 +308,7 @@ examples/
   - 该示例额外包含 `chart.png`（用于文件路径模式）
 - `15-xlsx-merged-cells-and-formulas`：`.xlsx` 循环块中的跨行合并单元格，以及模板复制后的公式引用修正
 - `16-pptx-slide-loop-and-condition`：`.pptx` slide 级循环/条件，以及幻灯片文本占位符渲染
+- `17-render-options-diagnostics`：`RenderOptions` 缺失值保留、warning 收集和区域性格式化
 
 如需重新生成示例资产：
 
@@ -288,7 +322,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、`.xlsx` 工作表行循环/条件/样式保留、`.xlsx` 图片/条形码占位符、`.xlsx` 合并单元格与公式引用修正、`.pptx` slide 级循环/条件与文本渲染、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、`.xlsx` 工作表行循环/条件/样式保留、`.xlsx` 图片/条形码占位符、`.xlsx` 合并单元格与公式引用修正、`.pptx` slide 级循环/条件与文本渲染、`RenderOptions` 缺失值保留/抛错/warning/区域性/相对图片路径、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

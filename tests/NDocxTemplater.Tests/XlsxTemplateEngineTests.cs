@@ -43,6 +43,30 @@ public class XlsxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_CanKeepMissingWorksheetTags()
+    {
+        var template = CreateWorkbook(
+            RowSpec.Create("Full tag", "{report.missing}"),
+            RowSpec.Create("Inline tag", "Value: {report.missing}"));
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            WarningHandler = warnings.Add
+        };
+
+        const string json = @"{ ""report"": { ""title"": ""Sales Summary"" } }";
+
+        var output = _engine.Render(template, json, options);
+        var rows = ReadSheetRows(output);
+
+        Assert.Equal(new[] { "Full tag", "{report.missing}" }, rows[0].Values);
+        Assert.Equal(new[] { "Inline tag", "Value: {report.missing}" }, rows[1].Values);
+        Assert.Equal(2, warnings.Count);
+        Assert.All(warnings, warning => Assert.Equal("report.missing", warning.Expression));
+    }
+
+    [Fact]
     public void Render_MapsJsonListToWorksheetRows_AndPreservesTemplateCellStyles()
     {
         var template = CreateWorkbook(

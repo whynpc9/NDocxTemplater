@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using DocumentFormat.OpenXml;
@@ -240,6 +241,100 @@ public class DocxTemplateEngineTests
         Assert.Contains(
             "备用写法（number pattern）：1.23% / 4.50‰",
             lines);
+    }
+
+    [Fact]
+    public void Render_CanKeepMissingTags_AndReportWarnings()
+    {
+        var template = CreateTemplate(
+            Paragraph("Patient: {patient.name}"),
+            Paragraph("Missing: {patient.missing}"));
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            WarningHandler = warnings.Add
+        };
+
+        const string json = @"{ ""patient"": { ""name"": ""Alice"" } }";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json, options));
+
+        Assert.Contains("Patient: Alice", lines);
+        Assert.Contains("Missing: {patient.missing}", lines);
+        var warning = Assert.Single(warnings);
+        Assert.Equal("MissingValue", warning.Code);
+        Assert.Equal("patient.missing", warning.Expression);
+    }
+
+    [Fact]
+    public void Render_CanThrowOnMissingTags()
+    {
+        var template = CreateTemplate(Paragraph("Missing: {patient.missing}"));
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.Throw
+        };
+
+        const string json = @"{ ""patient"": { ""name"": ""Alice"" } }";
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _engine.Render(template, json, options));
+        Assert.Contains("patient.missing", exception.Message);
+    }
+
+    [Fact]
+    public void Render_UsesConfiguredCulture_ForFormatting()
+    {
+        var template = CreateTemplate(
+            Paragraph("Amount: {amount|format:number:#,##0.00}"),
+            Paragraph("Month: {date|format:date:MMMM}"));
+        var options = new RenderOptions
+        {
+            Culture = CultureInfo.GetCultureInfo("de-DE")
+        };
+
+        const string json = @"{
+  ""amount"": 1234.5,
+  ""date"": ""2026-03-18T09:10:11Z""
+}";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json, options));
+
+        Assert.Contains("Amount: 1.234,50", lines);
+        Assert.Contains("Month: März", lines);
+    }
+
+    [Fact]
+    public void Render_ResolvesRelativeImagePaths_FromConfiguredBaseDirectory()
+    {
+        var imagePath = GetTestAssetPath("real-chart.png");
+        var imageDirectory = Path.GetDirectoryName(imagePath)!;
+        var imageBytes = File.ReadAllBytes(imagePath);
+        var template = CreateTemplate(Paragraph("{%chart}"));
+        var json = @"{
+  ""chart"": {
+    ""src"": ""real-chart.png"",
+    ""maxWidth"": 120,
+    ""preserveAspectRatio"": true
+  }
+}";
+        var options = new RenderOptions
+        {
+            BaseDirectory = imageDirectory
+        };
+
+        var output = _engine.Render(template, json, options);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var embeddedImage = document.MainDocumentPart!.ImageParts.Single();
+            using var imageStream = embeddedImage.GetStream();
+            using var copy = new MemoryStream();
+            imageStream.CopyTo(copy);
+
+            Assert.Equal(imageBytes, copy.ToArray());
+        }
     }
 
     [Fact]

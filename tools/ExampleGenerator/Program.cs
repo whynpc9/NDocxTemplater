@@ -376,6 +376,8 @@ GeneratePresentationExample(
     PresentationSlideSpec.Create("{:users}", "User {name}", "Amount {amount|format:number:0.00}"),
     PresentationSlideSpec.Create("{:showSummary}", "Summary {summaryText}"));
 
+GenerateRenderOptionsExample(examplesRoot);
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;
@@ -641,6 +643,67 @@ static void GenerateWorkbookMergeAndFormulaExample(string examplesRoot)
     }
 
     File.WriteAllBytes(outputPath, outputBytes);
+}
+
+static void GenerateRenderOptionsExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "17-render-options-diagnostics");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.docx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.docx");
+    var codePath = Path.Combine(dir, "example.cs");
+    var warningsPath = Path.Combine(dir, "warnings.txt");
+
+    const string json = """
+        {
+          "patient": {
+            "name": "Alice"
+          },
+          "amount": 1234.5
+        }
+        """;
+
+    const string sampleCode = """
+        using NDocxTemplater;
+
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            Culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE"),
+            WarningHandler = warnings.Add
+        };
+
+        var engine = new DocxTemplateEngine();
+        var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"), options);
+
+        File.WriteAllBytes("output.docx", output);
+        File.WriteAllLines("warnings.txt", warnings.Select(warning => $"{warning.Code}: {warning.Expression}"));
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateTemplate(
+        Paragraph("Patient: {patient.name}"),
+        Paragraph("Missing kept for review: {patient.missing}"),
+        Paragraph("Amount with de-DE culture: {amount|format:number:#,##0.00}"));
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var warnings = new List<RenderWarning>();
+    var options = new RenderOptions
+    {
+        MissingValueBehavior = MissingValueBehavior.KeepTag,
+        Culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE"),
+        WarningHandler = warnings.Add
+    };
+    var engine = new DocxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath), options);
+
+    File.WriteAllBytes(outputPath, outputBytes);
+    File.WriteAllLines(warningsPath, warnings.Select(warning => $"{warning.Code}: {warning.Expression}"));
 }
 
 static void GeneratePresentationExample(

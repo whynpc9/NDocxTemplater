@@ -18,6 +18,11 @@ public sealed class PptxTemplateEngine
 {
     public byte[] Render(byte[] templateBytes, string jsonData)
     {
+        return Render(templateBytes, jsonData, null);
+    }
+
+    public byte[] Render(byte[] templateBytes, string jsonData, RenderOptions? options)
+    {
         if (templateBytes == null)
         {
             throw new ArgumentNullException(nameof(templateBytes));
@@ -26,12 +31,17 @@ public sealed class PptxTemplateEngine
         using (var templateStream = new MemoryStream(templateBytes, writable: false))
         using (var outputStream = new MemoryStream())
         {
-            Render(templateStream, outputStream, jsonData);
+            Render(templateStream, outputStream, jsonData, options);
             return outputStream.ToArray();
         }
     }
 
     public void Render(Stream templateStream, Stream outputStream, string jsonData)
+    {
+        Render(templateStream, outputStream, jsonData, null);
+    }
+
+    public void Render(Stream templateStream, Stream outputStream, string jsonData, RenderOptions? options)
     {
         if (templateStream == null)
         {
@@ -71,7 +81,7 @@ public sealed class PptxTemplateEngine
                 throw new InvalidOperationException("The PPTX template does not contain a valid presentation.");
             }
 
-            var renderer = new PptxPresentationRenderer(document.PresentationPart, rootData);
+            var renderer = new PptxPresentationRenderer(document.PresentationPart, rootData, options);
             renderer.Render();
             document.PresentationPart.Presentation.Save();
         }
@@ -84,11 +94,13 @@ internal sealed class PptxPresentationRenderer
 {
     private readonly PresentationPart _presentationPart;
     private readonly JToken _rootData;
+    private readonly RenderOptions? _options;
 
-    public PptxPresentationRenderer(PresentationPart presentationPart, JToken rootData)
+    public PptxPresentationRenderer(PresentationPart presentationPart, JToken rootData, RenderOptions? options)
     {
         _presentationPart = presentationPart;
         _rootData = rootData;
+        _options = options;
     }
 
     public void Render()
@@ -99,7 +111,7 @@ internal sealed class PptxPresentationRenderer
             return;
         }
 
-        var rootContext = new TemplateContext(_rootData, _rootData, null);
+        var rootContext = new TemplateContext(_rootData, _rootData, null, _options);
         var sourceSlides = slideIdList.Elements<P.SlideId>()
             .Select(slideId => new PptxSourceSlide(
                 slideId,
@@ -222,7 +234,13 @@ internal static class PptxParagraphRenderer
                 return string.Empty;
             }
 
-            return ExpressionEvaluator.ToText(ExpressionEvaluator.Evaluate(expression, context));
+            var value = ExpressionEvaluator.Evaluate(expression, context, out var expressionResolved);
+            if (!expressionResolved && context.Options.MissingValueBehavior == MissingValueBehavior.KeepTag)
+            {
+                return match.Value;
+            }
+
+            return ExpressionEvaluator.ToText(value, context);
         });
 
         if (string.Equals(rawText, replaced, StringComparison.Ordinal))

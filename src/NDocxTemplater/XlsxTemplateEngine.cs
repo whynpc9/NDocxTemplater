@@ -18,6 +18,11 @@ public sealed class XlsxTemplateEngine
 {
     public byte[] Render(byte[] templateBytes, string jsonData)
     {
+        return Render(templateBytes, jsonData, null);
+    }
+
+    public byte[] Render(byte[] templateBytes, string jsonData, RenderOptions? options)
+    {
         if (templateBytes == null)
         {
             throw new ArgumentNullException(nameof(templateBytes));
@@ -26,12 +31,17 @@ public sealed class XlsxTemplateEngine
         using (var templateStream = new MemoryStream(templateBytes, writable: false))
         using (var outputStream = new MemoryStream())
         {
-            Render(templateStream, outputStream, jsonData);
+            Render(templateStream, outputStream, jsonData, options);
             return outputStream.ToArray();
         }
     }
 
     public void Render(Stream templateStream, Stream outputStream, string jsonData)
+    {
+        Render(templateStream, outputStream, jsonData, null);
+    }
+
+    public void Render(Stream templateStream, Stream outputStream, string jsonData, RenderOptions? options)
     {
         if (templateStream == null)
         {
@@ -71,7 +81,7 @@ public sealed class XlsxTemplateEngine
                 throw new InvalidOperationException("The XLSX template does not contain a valid workbook.");
             }
 
-            var renderer = new SpreadsheetTemplateRenderer(document.WorkbookPart, rootData);
+            var renderer = new SpreadsheetTemplateRenderer(document.WorkbookPart, rootData, options);
             renderer.Render();
             document.WorkbookPart.Workbook.Save();
         }
@@ -86,19 +96,21 @@ internal sealed class SpreadsheetTemplateRenderer
 
     private readonly WorkbookPart _workbookPart;
     private readonly JToken _rootData;
+    private readonly RenderOptions? _options;
     private uint _drawingObjectIdCounter;
     private int _scopeCounter;
 
-    public SpreadsheetTemplateRenderer(WorkbookPart workbookPart, JToken rootData)
+    public SpreadsheetTemplateRenderer(WorkbookPart workbookPart, JToken rootData, RenderOptions? options)
     {
         _workbookPart = workbookPart;
         _rootData = rootData;
+        _options = options;
         _drawingObjectIdCounter = SpreadsheetDrawingHelper.GetNextObjectId(workbookPart);
     }
 
     public void Render()
     {
-        var rootContext = new TemplateContext(_rootData, _rootData, null);
+        var rootContext = new TemplateContext(_rootData, _rootData, null, _options);
         foreach (var worksheetPart in _workbookPart.WorksheetParts)
         {
             RenderWorksheet(worksheetPart, rootContext);
@@ -242,7 +254,14 @@ internal sealed class SpreadsheetTemplateRenderer
                 return;
             }
 
-            SpreadsheetCellHelper.SetCellValue(cell, ExpressionEvaluator.Evaluate(expression, context));
+            var value = ExpressionEvaluator.Evaluate(expression, context, out var expressionResolved);
+            if (!expressionResolved && context.Options.MissingValueBehavior == MissingValueBehavior.KeepTag)
+            {
+                SpreadsheetCellHelper.SetCellString(cell, originalText);
+                return;
+            }
+
+            SpreadsheetCellHelper.SetCellValue(cell, value);
             return;
         }
 
@@ -259,7 +278,13 @@ internal sealed class SpreadsheetTemplateRenderer
                 return string.Empty;
             }
 
-            return ExpressionEvaluator.ToText(ExpressionEvaluator.Evaluate(expression, context));
+            var value = ExpressionEvaluator.Evaluate(expression, context, out var expressionResolved);
+            if (!expressionResolved && context.Options.MissingValueBehavior == MissingValueBehavior.KeepTag)
+            {
+                return match.Value;
+            }
+
+            return ExpressionEvaluator.ToText(value, context);
         });
 
         SpreadsheetCellHelper.SetCellString(cell, replaced);
