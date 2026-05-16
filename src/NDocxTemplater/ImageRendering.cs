@@ -159,7 +159,9 @@ internal static class ImageTagParser
     {
         imageTag = default;
 
-        var rawText = string.Concat(paragraph.Descendants<Text>().Select(static text => text.Text)).Trim();
+        var rawText = string.Concat(paragraph.Descendants<Text>()
+            .Where(text => !IsInsideNestedTextBoxContent(paragraph, text))
+            .Select(static text => text.Text)).Trim();
         if (rawText.Length == 0)
         {
             return false;
@@ -173,6 +175,22 @@ internal static class ImageTagParser
 
         var token = fullTag.Groups[1].Value.Trim();
         return TryParseToken(token, out imageTag);
+    }
+
+    private static bool IsInsideNestedTextBoxContent(Paragraph paragraph, OpenXmlElement element)
+    {
+        var parent = element.Parent;
+        while (parent != null && parent != paragraph)
+        {
+            if (parent is TextBoxContent)
+            {
+                return true;
+            }
+
+            parent = parent.Parent;
+        }
+
+        return false;
     }
 
     public static bool TryParseToken(string token, out ImageTag imageTag)

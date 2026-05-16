@@ -8,6 +8,7 @@ using NDocxTemplater;
 using A = DocumentFormat.OpenXml.Drawing;
 using P = DocumentFormat.OpenXml.Presentation;
 using S = DocumentFormat.OpenXml.Spreadsheet;
+using V = DocumentFormat.OpenXml.Vml;
 
 var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
 var examplesRoot = Path.Combine(repoRoot, "examples");
@@ -377,6 +378,7 @@ GeneratePresentationExample(
     PresentationSlideSpec.Create("{:showSummary}", "Summary {summaryText}"));
 
 GenerateRenderOptionsExample(examplesRoot);
+GenerateDocxExtendedPartsExample(examplesRoot);
 
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
@@ -706,6 +708,47 @@ static void GenerateRenderOptionsExample(string examplesRoot)
     File.WriteAllLines(warningsPath, warnings.Select(warning => $"{warning.Code}: {warning.Expression}"));
 }
 
+static void GenerateDocxExtendedPartsExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "18-docx-headers-footers-textboxes");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.docx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.docx");
+    var codePath = Path.Combine(dir, "example.cs");
+
+    const string json = """
+        {
+          "patient": {
+            "name": "Alice"
+          },
+          "items": [
+            { "name": "Alpha" },
+            { "name": "Beta" }
+          ]
+        }
+        """;
+
+    const string sampleCode = """
+        using NDocxTemplater;
+
+        var engine = new DocxTemplateEngine();
+        var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+        File.WriteAllBytes("output.docx", output);
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateExtendedDocxTemplate();
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new DocxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    File.WriteAllBytes(outputPath, outputBytes);
+}
+
 static void GeneratePresentationExample(
     string examplesRoot,
     string name,
@@ -744,6 +787,55 @@ static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
         {
             body.Append(element);
         }
+
+        mainPart.Document = new Document(body);
+        mainPart.Document.Save();
+    }
+
+    return stream.ToArray();
+}
+
+static byte[] CreateExtendedDocxTemplate()
+{
+    using var stream = new MemoryStream();
+    using (var document = WordprocessingDocument.Create(stream, WordprocessingDocumentType.Document, true))
+    {
+        var mainPart = document.AddMainDocumentPart();
+
+        var headerPart = mainPart.AddNewPart<HeaderPart>();
+        headerPart.Header = new Header(Paragraph("Header {patient.name}"));
+        headerPart.Header.Save();
+
+        var footerPart = mainPart.AddNewPart<FooterPart>();
+        footerPart.Footer = new Footer(Paragraph("Footer {patient.name}"));
+        footerPart.Footer.Save();
+
+        var body = new Body(
+            Paragraph("Body {patient.name}"),
+            new Paragraph(
+                new Run(new Text("Profile ")),
+                new Hyperlink(new Run(new Text("{patient.name}"))) { Anchor = "profile" }),
+            new Paragraph(
+                new Run(
+                    new Picture(
+                        new V.Shape(
+                            new V.TextBox(
+                                new TextBoxContent(
+                                    Paragraph("TextBox {patient.name}"),
+                                    Paragraph("{#items}"),
+                                    Paragraph("- {name}"),
+                                    Paragraph("{/items}"))))
+                        {
+                            Id = "TextBox1",
+                            Style = "width:200pt;height:80pt",
+                            Type = "#_x0000_t202"
+                        }))),
+            new Paragraph(
+                new BookmarkStart { Id = "1", Name = "profile" },
+                new BookmarkEnd { Id = "1" }),
+            new SectionProperties(
+                new HeaderReference { Type = HeaderFooterValues.Default, Id = mainPart.GetIdOfPart(headerPart) },
+                new FooterReference { Type = HeaderFooterValues.Default, Id = mainPart.GetIdOfPart(footerPart) }));
 
         mainPart.Document = new Document(body);
         mainPart.Document.Save();

@@ -10,6 +10,7 @@ using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using Xunit;
 using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
+using V = DocumentFormat.OpenXml.Vml;
 
 namespace NDocxTemplater.Tests;
 
@@ -600,6 +601,44 @@ public class DocxTemplateEngineTests
         Assert.Equal(new[] { "A", "2026-02-24" }, rows[1]);
     }
 
+    [Fact]
+    public void Render_ReplacesTagsInHeadersFootersHyperlinksAndTextBoxes()
+    {
+        var template = CreateTemplateWithExtendedDocxParts();
+
+        const string json = @"{
+  ""patient"": { ""name"": ""Alice"" },
+  ""items"": [
+    { ""name"": ""Alpha"" },
+    { ""name"": ""Beta"" }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var mainPart = document.MainDocumentPart!;
+            var bodyText = string.Concat(mainPart.Document.Body!.Elements<Paragraph>().First().Descendants<Text>().Select(static text => text.Text));
+            var hyperlinkText = string.Concat(mainPart.Document.Body!.Descendants<Hyperlink>().Single().Descendants<Text>().Select(static text => text.Text));
+            var textBoxLines = mainPart.Document.Body!.Descendants<TextBoxContent>()
+                .Single()
+                .Elements<Paragraph>()
+                .Select(static paragraph => string.Concat(paragraph.Descendants<Text>().Select(static text => text.Text)))
+                .Where(static text => !string.IsNullOrWhiteSpace(text))
+                .ToArray();
+            var headerText = string.Concat(mainPart.HeaderParts.Single().Header!.Descendants<Text>().Select(static text => text.Text));
+            var footerText = string.Concat(mainPart.FooterParts.Single().Footer!.Descendants<Text>().Select(static text => text.Text));
+
+            Assert.Equal("Body Alice", bodyText);
+            Assert.Equal("Alice", hyperlinkText);
+            Assert.Equal(new[] { "TextBox Alice", "- Alpha", "- Beta" }, textBoxLines);
+            Assert.Equal("Header Alice", headerText);
+            Assert.Equal("Footer Alice", footerText);
+        }
+    }
+
     private static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
     {
         using (var stream = new MemoryStream())
@@ -613,6 +652,60 @@ public class DocxTemplateEngineTests
                 {
                     body.Append(element);
                 }
+
+                mainPart.Document = new Document(body);
+                mainPart.Document.Save();
+            }
+
+            return stream.ToArray();
+        }
+    }
+
+    private static byte[] CreateTemplateWithExtendedDocxParts()
+    {
+        using (var stream = new MemoryStream())
+        {
+            using (var document = WordprocessingDocument.Create(stream, WordprocessingDocumentType.Document, true))
+            {
+                var mainPart = document.AddMainDocumentPart();
+
+                var headerPart = mainPart.AddNewPart<HeaderPart>();
+                headerPart.Header = new Header(Paragraph("Header {patient.name}"));
+                headerPart.Header.Save();
+
+                var footerPart = mainPart.AddNewPart<FooterPart>();
+                footerPart.Footer = new Footer(Paragraph("Footer {patient.name}"));
+                footerPart.Footer.Save();
+
+                var headerId = mainPart.GetIdOfPart(headerPart);
+                var footerId = mainPart.GetIdOfPart(footerPart);
+
+                var body = new Body(
+                    Paragraph("Body {patient.name}"),
+                    new Paragraph(
+                        new Run(new Text("Profile ")),
+                        new Hyperlink(new Run(new Text("{patient.name}"))) { Anchor = "profile" }),
+                    new Paragraph(
+                        new Run(
+                            new Picture(
+                                new V.Shape(
+                                    new V.TextBox(
+                                        new TextBoxContent(
+                                            Paragraph("TextBox {patient.name}"),
+                                            Paragraph("{#items}"),
+                                            Paragraph("- {name}"),
+                                            Paragraph("{/items}"))))
+                                {
+                                    Id = "TextBox1",
+                                    Style = "width:200pt;height:80pt",
+                                    Type = "#_x0000_t202"
+                                }))),
+                    new Paragraph(
+                        new BookmarkStart { Id = "1", Name = "profile" },
+                        new BookmarkEnd { Id = "1" }),
+                    new SectionProperties(
+                        new HeaderReference { Type = HeaderFooterValues.Default, Id = headerId },
+                        new FooterReference { Type = HeaderFooterValues.Default, Id = footerId }));
 
                 mainPart.Document = new Document(body);
                 mainPart.Document.Save();

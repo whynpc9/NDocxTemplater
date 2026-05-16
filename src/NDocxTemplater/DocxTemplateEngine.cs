@@ -80,7 +80,7 @@ public sealed class DocxTemplateEngine
 
             var renderer = new OpenXmlTemplateRenderer(rootData, document.MainDocumentPart);
             var rootContext = new TemplateContext(rootData, rootData, null, options);
-            renderer.RenderContainer(document.MainDocumentPart.Document.Body, rootContext);
+            renderer.RenderDocument(document.MainDocumentPart.Document.Body, rootContext);
             document.MainDocumentPart.Document.Save();
         }
 
@@ -98,6 +98,12 @@ internal sealed class OpenXmlTemplateRenderer
     {
         _rootData = rootData;
         _mainDocumentPart = mainDocumentPart;
+    }
+
+    public void RenderDocument(Body body, TemplateContext context)
+    {
+        RenderContainer(body, context);
+        RenderHeaderFooterParts(context);
     }
 
     public void RenderContainer(OpenXmlCompositeElement container, TemplateContext context)
@@ -218,15 +224,22 @@ internal sealed class OpenXmlTemplateRenderer
 
     private void RenderElement(OpenXmlElement element, TemplateContext context)
     {
+        if (element is TextBoxContent textBoxContent)
+        {
+            RenderContainer(textBoxContent, context);
+            return;
+        }
+
         if (element is Paragraph paragraph
             && ImageTemplateRenderer.TryRenderImageTag(paragraph, context, _mainDocumentPart, NextImageId))
         {
             return;
         }
 
-        if (element is Paragraph)
+        if (element is Paragraph paragraphElement)
         {
-            ReplaceInlineTags(element, context);
+            RenderNestedTextBoxContents(paragraphElement, context);
+            ReplaceInlineTags(paragraphElement, context);
             return;
         }
 
@@ -236,6 +249,39 @@ internal sealed class OpenXmlTemplateRenderer
         }
 
         ReplaceInlineTags(element, context);
+    }
+
+    private void RenderHeaderFooterParts(TemplateContext context)
+    {
+        foreach (var headerPart in _mainDocumentPart.HeaderParts)
+        {
+            if (headerPart.Header == null)
+            {
+                continue;
+            }
+
+            RenderContainer(headerPart.Header, context);
+            headerPart.Header.Save();
+        }
+
+        foreach (var footerPart in _mainDocumentPart.FooterParts)
+        {
+            if (footerPart.Footer == null)
+            {
+                continue;
+            }
+
+            RenderContainer(footerPart.Footer, context);
+            footerPart.Footer.Save();
+        }
+    }
+
+    private void RenderNestedTextBoxContents(OpenXmlElement element, TemplateContext context)
+    {
+        foreach (var textBoxContent in element.Descendants<TextBoxContent>().ToList())
+        {
+            RenderContainer(textBoxContent, context);
+        }
     }
 
     private uint NextImageId()
@@ -253,6 +299,11 @@ internal sealed class OpenXmlTemplateRenderer
 
         foreach (var textNode in element.Descendants<Text>())
         {
+            if (IsInsideTextBoxContent(textNode))
+            {
+                continue;
+            }
+
             if (string.IsNullOrEmpty(textNode.Text))
             {
                 continue;
@@ -264,7 +315,9 @@ internal sealed class OpenXmlTemplateRenderer
 
     private static void ReplaceInlineTagsInParagraph(Paragraph paragraph, TemplateContext context)
     {
-        var textNodes = paragraph.Descendants<Text>().ToList();
+        var textNodes = paragraph.Descendants<Text>()
+            .Where(static text => !IsInsideTextBoxContent(text))
+            .ToList();
         if (textNodes.Count == 0)
         {
             return;
@@ -313,6 +366,22 @@ internal sealed class OpenXmlTemplateRenderer
         {
             textNodes[index].Text = string.Empty;
         }
+    }
+
+    private static bool IsInsideTextBoxContent(OpenXmlElement element)
+    {
+        var parent = element.Parent;
+        while (parent != null)
+        {
+            if (parent is TextBoxContent)
+            {
+                return true;
+            }
+
+            parent = parent.Parent;
+        }
+
+        return false;
     }
 
     private static string ReplaceInlineTagsInText(string text, TemplateContext context)
