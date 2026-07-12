@@ -211,11 +211,14 @@ internal sealed class SpreadsheetTemplateRenderer
 
     private void RenderRow(RenderedSpreadsheetRow row, TemplateContext context)
     {
-        var columnIndex = 1;
+        var fallbackColumnIndex = 1;
         foreach (var cell in row.Row.Elements<S.Cell>())
         {
+            var columnIndex = SpreadsheetCellHelper.TryGetColumnIndex(cell.CellReference?.Value, out var referencedColumnIndex)
+                ? referencedColumnIndex
+                : fallbackColumnIndex;
             RenderCell(cell, columnIndex, row, context);
-            columnIndex++;
+            fallbackColumnIndex = Math.Max(fallbackColumnIndex + 1, columnIndex + 1);
         }
     }
 
@@ -550,6 +553,26 @@ internal static class SpreadsheetCellHelper
     {
         var letters = new string((cellReference ?? string.Empty).TakeWhile(static ch => !char.IsDigit(ch)).ToArray());
         return GetColumnIndexFromLetters(letters);
+    }
+
+    public static bool TryGetColumnIndex(string? cellReference, out int columnIndex)
+    {
+        columnIndex = 0;
+        if (!SpreadsheetCellReference.TryParse(cellReference ?? string.Empty, out var parsed)
+            || parsed.SheetPrefix.Length > 0
+            || parsed.ColumnName.Any(static ch => ch < 'A' || ch > 'Z'))
+        {
+            return false;
+        }
+
+        var parsedColumnIndex = GetColumnIndexFromLetters(parsed.ColumnName);
+        if (parsedColumnIndex > 16_384)
+        {
+            return false;
+        }
+
+        columnIndex = parsedColumnIndex;
+        return true;
     }
 
     public static string GetColumnName(int columnIndex)

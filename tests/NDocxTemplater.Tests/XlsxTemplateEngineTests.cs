@@ -255,6 +255,29 @@ public class XlsxTemplateEngineTests
         }
     }
 
+    [Theory]
+    [InlineData("A1", "C1", "C1")]
+    [InlineData(null, "C1", "C1")]
+    [InlineData("C1", null, "D1")]
+    [InlineData("C1", "not-a-reference", "D1")]
+    public void Render_AnchorsMediaUsingSparseCellReferences(
+        string? leadingCellReference,
+        string? mediaCellReference,
+        string expectedAnchor)
+    {
+        var imagePath = GetTestAssetPath("real-chart.png");
+        var template = CreateWorkbookWithReferencedMediaCells(leadingCellReference, mediaCellReference);
+        var json = "{\"image\":{\"src\":\"" + EscapeJsonString(imagePath) + "\"}}";
+
+        var output = _engine.Render(template, json);
+
+        using var stream = new MemoryStream(output);
+        using var document = SpreadsheetDocument.Open(stream, false);
+        var worksheetPart = document.WorkbookPart!.WorksheetParts.First();
+        var anchor = Assert.Single(worksheetPart.DrawingsPart!.WorksheetDrawing!.Elements<OneCellAnchor>());
+        Assert.Equal(expectedAnchor, AnchorToCell(anchor));
+    }
+
     [Fact]
     public void Render_RepeatsMergedRanges_AndAdjustsFormulaReferences()
     {
@@ -494,6 +517,47 @@ public class XlsxTemplateEngineTests
 
             return stream.ToArray();
         }
+    }
+
+    private static byte[] CreateWorkbookWithReferencedMediaCells(string? leadingCellReference, string? mediaCellReference)
+    {
+        using var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+
+            var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+            sharedStringPart.SharedStringTable = new SharedStringTable();
+
+            var cells = new List<Cell>();
+            if (leadingCellReference != null)
+            {
+                cells.Add(CreateSharedStringCell(workbookPart, "Label", leadingCellReference));
+            }
+
+            var mediaCell = CreateSharedStringCell(workbookPart, "{%image}", mediaCellReference ?? "A1");
+            mediaCell.CellReference = mediaCellReference;
+            cells.Add(mediaCell);
+
+            var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+            worksheetPart.Worksheet = new Worksheet(
+                new SheetDimension { Reference = "A1:D1" },
+                new SheetData(CreateRow(1, cells.ToArray())));
+            worksheetPart.Worksheet.Save();
+
+            workbookPart.Workbook.Append(
+                new Sheets(
+                    new Sheet
+                    {
+                        Id = workbookPart.GetIdOfPart(worksheetPart),
+                        SheetId = 1U,
+                        Name = "Report"
+                    }));
+            workbookPart.Workbook.Save();
+        }
+
+        return stream.ToArray();
     }
 
     private static byte[] CreateWorkbookWithAutoFilterReference(string reference)
