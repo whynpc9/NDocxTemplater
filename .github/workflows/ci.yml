@@ -20,7 +20,7 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore
-        run: dotnet restore NDocxTemplater.sln
+        run: dotnet restore NDocxTemplater.sln -p:NuGetAudit=true -p:NuGetAuditLevel=high
 
       - name: Build
         run: dotnet build NDocxTemplater.sln -c Release --no-restore

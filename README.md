@@ -284,7 +284,16 @@ dotnet run --project tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
 发布由 GitHub Actions 自动完成：
 
 - CI：`build + test + lint(dotnet format)`
-- 发布：打 tag（如 `v0.1.0`）或手动触发 `Publish NuGet` workflow
+- 发布版本必须在项目、Git tag 与生成的 `.nupkg` 文件之间完全一致。例如，项目版本
+  `1.11.1` 必须使用 tag `v1.11.1`，并生成且只生成一个主包
+  `NDocxTemplater.1.11.1.nupkg`（符号包 `.snupkg` 不计入主包数量）。不一致时 workflow
+  会在推送 NuGet 前失败。
+- 常规发布：推送与项目版本匹配的 `vX.Y.Z` tag。
+- 手动发布：触发 `Publish NuGet` workflow，并同时填写必填的 `version`（不带 `v`，如
+  `1.11.1`）与 `ref`（包含该项目版本的确定 Git ref）。workflow 会 checkout 指定的
+  `ref`，并按同一身份校验规则发布。
+- GitHub hosted CI 与发布 workflow 会启用 NuGet 高危及严重漏洞审计；本地离线 restore
+  默认行为保持不变。
 - NuGet API Key 使用仓库 Secret：`NUGET_API_KEY`
 
 ## Examples
