@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
 using JToken = System.Text.Json.Nodes.JsonNode;
 
 namespace NDocxTemplater;
@@ -92,12 +93,13 @@ internal sealed class OpenXmlTemplateRenderer
 {
     private readonly JToken _rootData;
     private readonly MainDocumentPart _mainDocumentPart;
-    private uint _imageIdCounter = 1;
+    private uint _nextImageId;
 
     public OpenXmlTemplateRenderer(JToken rootData, MainDocumentPart mainDocumentPart)
     {
         _rootData = rootData;
         _mainDocumentPart = mainDocumentPart;
+        _nextImageId = FindNextImageId(mainDocumentPart);
     }
 
     public void RenderDocument(Body body, TemplateContext context)
@@ -286,7 +288,54 @@ internal sealed class OpenXmlTemplateRenderer
 
     private uint NextImageId()
     {
-        return _imageIdCounter++;
+        if (_nextImageId == 0)
+        {
+            throw new InvalidOperationException("No more DOCX drawing IDs are available.");
+        }
+
+        var imageId = _nextImageId;
+        _nextImageId = imageId == uint.MaxValue ? 0 : imageId + 1;
+        return imageId;
+    }
+
+    private static uint FindNextImageId(MainDocumentPart mainDocumentPart)
+    {
+        var maximumId = 0U;
+
+        UpdateMaximumDrawingId(mainDocumentPart.Document, ref maximumId);
+
+        foreach (var headerPart in mainDocumentPart.HeaderParts)
+        {
+            UpdateMaximumDrawingId(headerPart.Header, ref maximumId);
+        }
+
+        foreach (var footerPart in mainDocumentPart.FooterParts)
+        {
+            UpdateMaximumDrawingId(footerPart.Footer, ref maximumId);
+        }
+
+        if (maximumId == uint.MaxValue)
+        {
+            throw new InvalidOperationException("No more DOCX drawing IDs are available.");
+        }
+
+        return maximumId + 1;
+    }
+
+    private static void UpdateMaximumDrawingId(OpenXmlElement? root, ref uint maximumId)
+    {
+        if (root == null)
+        {
+            return;
+        }
+
+        foreach (var properties in root.Descendants<DW.DocProperties>())
+        {
+            if (properties.Id?.Value > maximumId)
+            {
+                maximumId = properties.Id.Value;
+            }
+        }
     }
 
     private static void ReplaceInlineTags(OpenXmlElement element, TemplateContext context)
