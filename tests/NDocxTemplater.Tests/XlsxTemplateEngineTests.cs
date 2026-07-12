@@ -16,6 +16,87 @@ public class XlsxTemplateEngineTests
 {
     private readonly XlsxTemplateEngine _engine = new XlsxTemplateEngine();
 
+    [Theory]
+    [InlineData("A0", false, 0U)]
+    [InlineData("A1", true, 1U)]
+    [InlineData("XFD1048576", true, SpreadsheetRowBounds.Maximum)]
+    [InlineData("A1048577", false, 0U)]
+    [InlineData("A4294967295", false, 0U)]
+    public void SpreadsheetCellReference_TryParse_EnforcesXlsxRowBounds(string reference, bool expectedResult, uint expectedRow)
+    {
+        var result = SpreadsheetCellReference.TryParse(reference, out var parsed);
+
+        Assert.Equal(expectedResult, result);
+        Assert.Equal(expectedRow, parsed.RowIndex);
+    }
+
+    [Fact]
+    public void SpreadsheetRowMapping_ResolvesMaximumRowWithoutWraparound()
+    {
+        const string scopeId = "scope";
+        var renderedRow = new RenderedSpreadsheetRow(
+            new Row { RowIndex = SpreadsheetRowBounds.Maximum },
+            SpreadsheetRowBounds.Maximum,
+            scopeId)
+        {
+            TargetRowIndex = 42U
+        };
+        var mapping = new SpreadsheetRowMapping(new[] { renderedRow }, "root");
+
+        Assert.True(mapping.TryResolveRangeInScope(
+            scopeId,
+            SpreadsheetRowBounds.Maximum,
+            SpreadsheetRowBounds.Maximum,
+            out var scopedStart,
+            out var scopedEnd));
+        Assert.Equal(42U, scopedStart);
+        Assert.Equal(42U, scopedEnd);
+
+        Assert.True(mapping.TryResolveRangeGlobal(
+            SpreadsheetRowBounds.Maximum,
+            SpreadsheetRowBounds.Maximum,
+            out var globalStart,
+            out var globalEnd));
+        Assert.Equal(42U, globalStart);
+        Assert.Equal(42U, globalEnd);
+    }
+
+    [Theory]
+    [InlineData(0U)]
+    [InlineData(1_048_577U)]
+    [InlineData(uint.MaxValue)]
+    public void SpreadsheetRowMapping_RejectsOutOfBoundsDirectCallers(uint invalidRow)
+    {
+        var renderedRow = new RenderedSpreadsheetRow(new Row { RowIndex = 1U }, 1U, "scope")
+        {
+            TargetRowIndex = 1U
+        };
+        var mapping = new SpreadsheetRowMapping(new[] { renderedRow }, "root");
+
+        Assert.False(mapping.TryResolveRangeInScope("scope", 1U, invalidRow, out var scopedStart, out var scopedEnd));
+        Assert.Equal(0U, scopedStart);
+        Assert.Equal(0U, scopedEnd);
+
+        Assert.False(mapping.TryResolveRangeGlobal(1U, invalidRow, out var globalStart, out var globalEnd));
+        Assert.Equal(0U, globalStart);
+        Assert.Equal(0U, globalEnd);
+    }
+
+    [Theory]
+    [InlineData("A1:A1048577")]
+    [InlineData("A1:A4294967295")]
+    public void Render_PreservesMalformedOutOfBoundsRangeWithoutIteratingIt(string invalidRange)
+    {
+        var template = CreateWorkbookWithAutoFilterReference(invalidRange);
+
+        var output = _engine.Render(template, "{}");
+
+        using var stream = new MemoryStream(output);
+        using var document = SpreadsheetDocument.Open(stream, false);
+        var autoFilter = document.WorkbookPart!.WorksheetParts.First().Worksheet.GetFirstChild<AutoFilter>();
+        Assert.Equal(invalidRange, autoFilter!.Reference!.Value);
+    }
+
     [Fact]
     public void Render_ReplacesWorksheetCellTags_AndKeepsTypedNumericValues()
     {
@@ -413,6 +494,38 @@ public class XlsxTemplateEngineTests
 
             return stream.ToArray();
         }
+    }
+
+    private static byte[] CreateWorkbookWithAutoFilterReference(string reference)
+    {
+        using var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+
+            var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+            sharedStringPart.SharedStringTable = new SharedStringTable();
+
+            var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+            worksheetPart.Worksheet = new Worksheet(
+                new SheetDimension { Reference = "A1" },
+                new AutoFilter { Reference = reference },
+                new SheetData(CreateRow(workbookPart, 1, "Value")));
+            worksheetPart.Worksheet.Save();
+
+            workbookPart.Workbook.Append(
+                new Sheets(
+                    new Sheet
+                    {
+                        Id = workbookPart.GetIdOfPart(worksheetPart),
+                        SheetId = 1U,
+                        Name = "Report"
+                    }));
+            workbookPart.Workbook.Save();
+        }
+
+        return stream.ToArray();
     }
 
     private static Row CreateRow(WorkbookPart workbookPart, int rowIndex, params string[] values)

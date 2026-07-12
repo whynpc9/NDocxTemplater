@@ -1136,6 +1136,13 @@ internal sealed class SpreadsheetRowMapping
 
     public bool TryResolveRangeInScope(string scopeId, uint startSourceRow, uint endSourceRow, out uint startTargetRow, out uint endTargetRow)
     {
+        if (!SpreadsheetRowBounds.IsValid(startSourceRow) || !SpreadsheetRowBounds.IsValid(endSourceRow))
+        {
+            startTargetRow = 0U;
+            endTargetRow = 0U;
+            return false;
+        }
+
         if (!_rowsByScope.TryGetValue(scopeId, out var scopeRows))
         {
             startTargetRow = 0U;
@@ -1148,24 +1155,31 @@ internal sealed class SpreadsheetRowMapping
         var collectedRows = new List<uint>();
         var usedScopeRow = false;
 
-        for (uint sourceRow = ascendingStart; sourceRow <= ascendingEnd; sourceRow++)
+        var sourceRow = ascendingStart;
+        while (true)
         {
             if (scopeRows.TryGetValue(sourceRow, out var scopedRow))
             {
                 collectedRows.Add(scopedRow);
                 usedScopeRow = true;
-                continue;
             }
-
-            if (TryGetUniqueGlobalRow(sourceRow, out var uniqueRow))
+            else if (TryGetUniqueGlobalRow(sourceRow, out var uniqueRow))
             {
                 collectedRows.Add(uniqueRow);
-                continue;
+            }
+            else
+            {
+                startTargetRow = 0U;
+                endTargetRow = 0U;
+                return false;
             }
 
-            startTargetRow = 0U;
-            endTargetRow = 0U;
-            return false;
+            if (sourceRow == ascendingEnd)
+            {
+                break;
+            }
+
+            sourceRow++;
         }
 
         if (!usedScopeRow && !string.Equals(scopeId, _rootScopeId, StringComparison.Ordinal))
@@ -1181,16 +1195,31 @@ internal sealed class SpreadsheetRowMapping
 
     public bool TryResolveRangeGlobal(uint startSourceRow, uint endSourceRow, out uint startTargetRow, out uint endTargetRow)
     {
+        if (!SpreadsheetRowBounds.IsValid(startSourceRow) || !SpreadsheetRowBounds.IsValid(endSourceRow))
+        {
+            startTargetRow = 0U;
+            endTargetRow = 0U;
+            return false;
+        }
+
         var ascendingStart = Math.Min(startSourceRow, endSourceRow);
         var ascendingEnd = Math.Max(startSourceRow, endSourceRow);
         var collectedRows = new List<uint>();
 
-        for (uint sourceRow = ascendingStart; sourceRow <= ascendingEnd; sourceRow++)
+        var sourceRow = ascendingStart;
+        while (true)
         {
             if (_rowsBySource.TryGetValue(sourceRow, out var mappedRows))
             {
                 collectedRows.AddRange(mappedRows);
             }
+
+            if (sourceRow == ascendingEnd)
+            {
+                break;
+            }
+
+            sourceRow++;
         }
 
         if (collectedRows.Count == 0)
@@ -1229,6 +1258,17 @@ internal sealed class SpreadsheetRowMapping
 
         startTargetRow = maxRow;
         endTargetRow = minRow;
+    }
+}
+
+internal static class SpreadsheetRowBounds
+{
+    public const uint Minimum = 1U;
+    public const uint Maximum = 1_048_576U;
+
+    public static bool IsValid(uint rowIndex)
+    {
+        return rowIndex >= Minimum && rowIndex <= Maximum;
     }
 }
 
@@ -1358,7 +1398,8 @@ internal readonly struct SpreadsheetCellReference
             return false;
         }
 
-        if (!uint.TryParse(cellPart.Substring(index), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rowIndex))
+        if (!uint.TryParse(cellPart.Substring(index), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rowIndex)
+            || !SpreadsheetRowBounds.IsValid(rowIndex))
         {
             return false;
         }
