@@ -24,7 +24,7 @@ internal static class ImageTemplateRenderer
     public static bool TryRenderImageTag(
         Paragraph paragraph,
         TemplateContext context,
-        MainDocumentPart mainDocumentPart,
+        OpenXmlPart storyPart,
         Func<uint> nextImageId)
     {
         if (!ImageTagParser.TryParseParagraph(paragraph, out var imageTag))
@@ -46,7 +46,7 @@ internal static class ImageTemplateRenderer
 
         foreach (var image in images)
         {
-            paragraph.Append(CreateImageRun(mainDocumentPart, image, nextImageId()));
+            paragraph.Append(CreateImageRun(storyPart, image, nextImageId()));
         }
 
         return true;
@@ -68,15 +68,15 @@ internal static class ImageTemplateRenderer
         properties.Justification = new Justification { Val = JustificationValues.Center };
     }
 
-    private static Run CreateImageRun(MainDocumentPart mainDocumentPart, ImagePayload image, uint imageId)
+    private static Run CreateImageRun(OpenXmlPart storyPart, ImagePayload image, uint imageId)
     {
-        var imagePart = mainDocumentPart.AddImagePart(image.ImagePartType);
+        var imagePart = storyPart.AddNewPart<ImagePart>(image.ImagePartType.ContentType);
         using (var imageStream = new MemoryStream(image.Bytes, writable: false))
         {
             imagePart.FeedData(imageStream);
         }
 
-        var relationId = mainDocumentPart.GetIdOfPart(imagePart);
+        var relationId = storyPart.GetIdOfPart(imagePart);
         var drawing = CreateDrawing(relationId, image.WidthPx, image.HeightPx, imageId);
         return new Run(drawing);
     }
@@ -149,7 +149,7 @@ internal static class TemplateMediaResolver
         }
 
         var imageToken = ExpressionEvaluator.Evaluate(expression, context);
-        return ImageInputResolver.ResolveMany(imageToken);
+        return ImageInputResolver.ResolveMany(imageToken, context.Options);
     }
 }
 
@@ -159,7 +159,9 @@ internal static class ImageTagParser
     {
         imageTag = default;
 
-        var rawText = string.Concat(paragraph.Descendants<Text>().Select(static text => text.Text)).Trim();
+        var rawText = string.Concat(paragraph.Descendants<Text>()
+            .Where(text => !IsInsideNestedTextBoxContent(paragraph, text))
+            .Select(static text => text.Text)).Trim();
         if (rawText.Length == 0)
         {
             return false;
@@ -173,6 +175,22 @@ internal static class ImageTagParser
 
         var token = fullTag.Groups[1].Value.Trim();
         return TryParseToken(token, out imageTag);
+    }
+
+    private static bool IsInsideNestedTextBoxContent(Paragraph paragraph, OpenXmlElement element)
+    {
+        var parent = element.Parent;
+        while (parent != null && parent != paragraph)
+        {
+            if (parent is TextBoxContent)
+            {
+                return true;
+            }
+
+            parent = parent.Parent;
+        }
+
+        return false;
     }
 
     public static bool TryParseToken(string token, out ImageTag imageTag)
@@ -201,7 +219,7 @@ internal static class ImageTagParser
 
 internal static class ImageInputResolver
 {
-    public static IEnumerable<ImagePayload> ResolveMany(JToken? token)
+    public static IEnumerable<ImagePayload> ResolveMany(JToken? token, RenderOptions options)
     {
         if (JsonNodeHelpers.IsNull(token))
         {
@@ -210,13 +228,13 @@ internal static class ImageInputResolver
 
         if (token is JArray array)
         {
-            return array.Where(static item => item != null).Select(static item => ResolveSingle(item!)).ToList();
+            return array.Where(static item => item != null).Select(item => ResolveSingle(item!, options)).ToList();
         }
 
-        return new[] { ResolveSingle(token!) };
+        return new[] { ResolveSingle(token!, options) };
     }
 
-    private static ImagePayload ResolveSingle(JToken token)
+    private static ImagePayload ResolveSingle(JToken token, RenderOptions options)
     {
         string? source = null;
         int? width = null;
@@ -254,7 +272,7 @@ internal static class ImageInputResolver
             throw new InvalidOperationException("Image value must be a string or object containing src/data/base64/path.");
         }
 
-        var imageBytes = ParseImageBytes(sourceText!, out var mimeHint, out var extensionHint);
+        var imageBytes = ParseImageBytes(sourceText!, options, out var mimeHint, out var extensionHint);
         var imagePartType = DetectImagePartType(imageBytes, mimeHint, extensionHint);
 
         var inferredSize = ImageBinaryInspector.TryReadPixelSize(imageBytes);
@@ -270,7 +288,7 @@ internal static class ImageInputResolver
         return new ImagePayload(imageBytes, imagePartType, resolvedSize.Width, resolvedSize.Height);
     }
 
-    private static byte[] ParseImageBytes(string source, out string? mimeHint, out string? extensionHint)
+    private static byte[] ParseImageBytes(string source, RenderOptions options, out string? mimeHint, out string? extensionHint)
     {
         mimeHint = null;
         extensionHint = null;
@@ -301,10 +319,11 @@ internal static class ImageInputResolver
             return Convert.FromBase64String(payload);
         }
 
-        if (File.Exists(source))
+        var resolvedPath = ResolveImagePath(source, options);
+        if (resolvedPath != null)
         {
-            extensionHint = Path.GetExtension(source);
-            return File.ReadAllBytes(source);
+            extensionHint = Path.GetExtension(resolvedPath);
+            return File.ReadAllBytes(resolvedPath);
         }
 
         try
@@ -316,6 +335,22 @@ internal static class ImageInputResolver
             throw new InvalidOperationException(
                 "Image string value must be base64, base64 data URI, or an existing file path.");
         }
+    }
+
+    private static string? ResolveImagePath(string source, RenderOptions options)
+    {
+        if (File.Exists(source))
+        {
+            return source;
+        }
+
+        if (Path.IsPathRooted(source) || string.IsNullOrWhiteSpace(options.BaseDirectory))
+        {
+            return null;
+        }
+
+        var candidate = Path.Combine(options.BaseDirectory!, source);
+        return File.Exists(candidate) ? candidate : null;
     }
 
     private static PartTypeInfo DetectImagePartType(byte[] bytes, string? mimeHint, string? extensionHint)

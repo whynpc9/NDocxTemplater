@@ -18,6 +18,11 @@ public sealed class XlsxTemplateEngine
 {
     public byte[] Render(byte[] templateBytes, string jsonData)
     {
+        return Render(templateBytes, jsonData, null);
+    }
+
+    public byte[] Render(byte[] templateBytes, string jsonData, RenderOptions? options)
+    {
         if (templateBytes == null)
         {
             throw new ArgumentNullException(nameof(templateBytes));
@@ -26,12 +31,17 @@ public sealed class XlsxTemplateEngine
         using (var templateStream = new MemoryStream(templateBytes, writable: false))
         using (var outputStream = new MemoryStream())
         {
-            Render(templateStream, outputStream, jsonData);
+            Render(templateStream, outputStream, jsonData, options);
             return outputStream.ToArray();
         }
     }
 
     public void Render(Stream templateStream, Stream outputStream, string jsonData)
+    {
+        Render(templateStream, outputStream, jsonData, null);
+    }
+
+    public void Render(Stream templateStream, Stream outputStream, string jsonData, RenderOptions? options)
     {
         if (templateStream == null)
         {
@@ -71,7 +81,7 @@ public sealed class XlsxTemplateEngine
                 throw new InvalidOperationException("The XLSX template does not contain a valid workbook.");
             }
 
-            var renderer = new SpreadsheetTemplateRenderer(document.WorkbookPart, rootData);
+            var renderer = new SpreadsheetTemplateRenderer(document.WorkbookPart, rootData, options);
             renderer.Render();
             document.WorkbookPart.Workbook.Save();
         }
@@ -86,19 +96,21 @@ internal sealed class SpreadsheetTemplateRenderer
 
     private readonly WorkbookPart _workbookPart;
     private readonly JToken _rootData;
+    private readonly RenderOptions? _options;
     private uint _drawingObjectIdCounter;
     private int _scopeCounter;
 
-    public SpreadsheetTemplateRenderer(WorkbookPart workbookPart, JToken rootData)
+    public SpreadsheetTemplateRenderer(WorkbookPart workbookPart, JToken rootData, RenderOptions? options)
     {
         _workbookPart = workbookPart;
         _rootData = rootData;
+        _options = options;
         _drawingObjectIdCounter = SpreadsheetDrawingHelper.GetNextObjectId(workbookPart);
     }
 
     public void Render()
     {
-        var rootContext = new TemplateContext(_rootData, _rootData, null);
+        var rootContext = new TemplateContext(_rootData, _rootData, null, _options);
         foreach (var worksheetPart in _workbookPart.WorksheetParts)
         {
             RenderWorksheet(worksheetPart, rootContext);
@@ -141,6 +153,7 @@ internal sealed class SpreadsheetTemplateRenderer
         }
 
         SpreadsheetMergeHelper.RebuildMergeCells(worksheetPart.Worksheet, originalMergeReferences, rowMapping);
+        SpreadsheetRangeMaintenanceHelper.UpdateWorksheetRanges(_workbookPart, worksheetPart, rowMapping);
         SpreadsheetDrawingHelper.RenderMedia(worksheetPart, renderedRows, NextDrawingObjectId);
         SpreadsheetCellHelper.UpdateSheetDimension(worksheetPart.Worksheet, sheetData);
         worksheetPart.Worksheet.Save();
@@ -198,11 +211,14 @@ internal sealed class SpreadsheetTemplateRenderer
 
     private void RenderRow(RenderedSpreadsheetRow row, TemplateContext context)
     {
-        var columnIndex = 1;
+        var fallbackColumnIndex = 1;
         foreach (var cell in row.Row.Elements<S.Cell>())
         {
+            var columnIndex = SpreadsheetCellHelper.TryGetColumnIndex(cell.CellReference?.Value, out var referencedColumnIndex)
+                ? referencedColumnIndex
+                : fallbackColumnIndex;
             RenderCell(cell, columnIndex, row, context);
-            columnIndex++;
+            fallbackColumnIndex = Math.Max(fallbackColumnIndex + 1, columnIndex + 1);
         }
     }
 
@@ -242,7 +258,14 @@ internal sealed class SpreadsheetTemplateRenderer
                 return;
             }
 
-            SpreadsheetCellHelper.SetCellValue(cell, ExpressionEvaluator.Evaluate(expression, context));
+            var value = ExpressionEvaluator.Evaluate(expression, context, out var expressionResolved);
+            if (!expressionResolved && context.Options.MissingValueBehavior == MissingValueBehavior.KeepTag)
+            {
+                SpreadsheetCellHelper.SetCellString(cell, originalText);
+                return;
+            }
+
+            SpreadsheetCellHelper.SetCellValue(cell, value);
             return;
         }
 
@@ -259,7 +282,13 @@ internal sealed class SpreadsheetTemplateRenderer
                 return string.Empty;
             }
 
-            return ExpressionEvaluator.ToText(ExpressionEvaluator.Evaluate(expression, context));
+            var value = ExpressionEvaluator.Evaluate(expression, context, out var expressionResolved);
+            if (!expressionResolved && context.Options.MissingValueBehavior == MissingValueBehavior.KeepTag)
+            {
+                return match.Value;
+            }
+
+            return ExpressionEvaluator.ToText(value, context);
         });
 
         SpreadsheetCellHelper.SetCellString(cell, replaced);
@@ -524,6 +553,26 @@ internal static class SpreadsheetCellHelper
     {
         var letters = new string((cellReference ?? string.Empty).TakeWhile(static ch => !char.IsDigit(ch)).ToArray());
         return GetColumnIndexFromLetters(letters);
+    }
+
+    public static bool TryGetColumnIndex(string? cellReference, out int columnIndex)
+    {
+        columnIndex = 0;
+        if (!SpreadsheetCellReference.TryParse(cellReference ?? string.Empty, out var parsed)
+            || parsed.SheetPrefix.Length > 0
+            || parsed.ColumnName.Any(static ch => ch < 'A' || ch > 'Z'))
+        {
+            return false;
+        }
+
+        var parsedColumnIndex = GetColumnIndexFromLetters(parsed.ColumnName);
+        if (parsedColumnIndex > 16_384)
+        {
+            return false;
+        }
+
+        columnIndex = parsedColumnIndex;
+        return true;
     }
 
     public static string GetColumnName(int columnIndex)
@@ -945,6 +994,126 @@ internal static class SpreadsheetDrawingHelper
     }
 }
 
+internal static class SpreadsheetRangeMaintenanceHelper
+{
+    public static void UpdateWorksheetRanges(WorkbookPart workbookPart, WorksheetPart worksheetPart, SpreadsheetRowMapping mapping)
+    {
+        UpdateWorksheetAutoFilter(worksheetPart.Worksheet, mapping);
+        UpdateTableDefinitions(worksheetPart, mapping);
+        UpdateDefinedNames(workbookPart, worksheetPart, mapping);
+        RemoveCalculationChain(workbookPart);
+    }
+
+    private static void UpdateWorksheetAutoFilter(S.Worksheet worksheet, SpreadsheetRowMapping mapping)
+    {
+        var autoFilter = worksheet.GetFirstChild<S.AutoFilter>();
+        if (autoFilter?.Reference == null)
+        {
+            return;
+        }
+
+        autoFilter.Reference = RewriteRangeReference(autoFilter.Reference.Value, mapping);
+    }
+
+    private static void UpdateTableDefinitions(WorksheetPart worksheetPart, SpreadsheetRowMapping mapping)
+    {
+        foreach (var tableDefinitionPart in worksheetPart.TableDefinitionParts)
+        {
+            var table = tableDefinitionPart.Table;
+            if (table == null)
+            {
+                continue;
+            }
+
+            if (table.Reference != null)
+            {
+                table.Reference = RewriteRangeReference(table.Reference.Value, mapping);
+            }
+
+            if (table.AutoFilter?.Reference != null)
+            {
+                table.AutoFilter.Reference = RewriteRangeReference(table.AutoFilter.Reference.Value, mapping);
+            }
+
+            table.Save();
+        }
+    }
+
+    private static void UpdateDefinedNames(WorkbookPart workbookPart, WorksheetPart worksheetPart, SpreadsheetRowMapping mapping)
+    {
+        var definedNames = workbookPart.Workbook.DefinedNames;
+        if (definedNames == null)
+        {
+            return;
+        }
+
+        var sheets = workbookPart.Workbook.Sheets?.Elements<S.Sheet>().ToArray() ?? Array.Empty<S.Sheet>();
+        var relationshipId = workbookPart.GetIdOfPart(worksheetPart);
+        var sheetIndex = Array.FindIndex(sheets, sheet => sheet.Id?.Value == relationshipId);
+        if (sheetIndex < 0)
+        {
+            return;
+        }
+
+        var sheetName = sheets[sheetIndex].Name?.Value;
+
+        foreach (var definedName in definedNames.Elements<S.DefinedName>())
+        {
+            if (string.IsNullOrWhiteSpace(definedName.Text))
+            {
+                continue;
+            }
+
+            definedName.Text = RewriteFormulaLikeRanges(
+                definedName.Text!, mapping, sheetName,
+                definedName.LocalSheetId?.Value == (uint)sheetIndex);
+        }
+    }
+
+    private static void RemoveCalculationChain(WorkbookPart workbookPart)
+    {
+        if (workbookPart.CalculationChainPart != null)
+        {
+            workbookPart.DeletePart(workbookPart.CalculationChainPart);
+        }
+    }
+
+    private static string RewriteFormulaLikeRanges(string text, SpreadsheetRowMapping mapping, string? sheetName, bool isLocalToSheet)
+    {
+        return Regex.Replace(
+            text,
+            @"(?<![\p{L}\p{N}_.'!\]])(?<range>(?:(?<sheet>'(?:[^']|'')+'|(?:\[[^\]]+\])?[\p{L}\p{N}_][\p{L}\p{N}_.]*)!)?\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+)",
+            match =>
+            {
+                var referencedSheet = match.Groups["sheet"].Value;
+                if (referencedSheet.StartsWith("'", StringComparison.Ordinal))
+                {
+                    referencedSheet = referencedSheet.Substring(1, referencedSheet.Length - 2).Replace("''", "'");
+                }
+
+                var ownsRange = match.Groups["sheet"].Success
+                    ? string.Equals(referencedSheet, sheetName, StringComparison.OrdinalIgnoreCase)
+                    : isLocalToSheet;
+                return ownsRange ? RewriteRangeReference(match.Groups["range"].Value, mapping) : match.Value;
+            });
+    }
+
+    private static string RewriteRangeReference(string? reference, SpreadsheetRowMapping mapping)
+    {
+        if (!SpreadsheetRangeReference.TryParse(reference ?? string.Empty, out var range))
+        {
+            return reference ?? string.Empty;
+        }
+
+        if (!mapping.TryResolveRangeGlobal(range.Start.RowIndex, range.End.RowIndex, out var startRow, out var endRow))
+        {
+            return reference ?? string.Empty;
+        }
+
+        return range.WithRows(startRow, endRow);
+    }
+}
+
 internal sealed class SpreadsheetRowMapping
 {
     private readonly Dictionary<uint, List<uint>> _rowsBySource = new Dictionary<uint, List<uint>>();
@@ -1014,6 +1183,13 @@ internal sealed class SpreadsheetRowMapping
 
     public bool TryResolveRangeInScope(string scopeId, uint startSourceRow, uint endSourceRow, out uint startTargetRow, out uint endTargetRow)
     {
+        if (!SpreadsheetRowBounds.IsValid(startSourceRow) || !SpreadsheetRowBounds.IsValid(endSourceRow))
+        {
+            startTargetRow = 0U;
+            endTargetRow = 0U;
+            return false;
+        }
+
         if (!_rowsByScope.TryGetValue(scopeId, out var scopeRows))
         {
             startTargetRow = 0U;
@@ -1026,24 +1202,31 @@ internal sealed class SpreadsheetRowMapping
         var collectedRows = new List<uint>();
         var usedScopeRow = false;
 
-        for (uint sourceRow = ascendingStart; sourceRow <= ascendingEnd; sourceRow++)
+        var sourceRow = ascendingStart;
+        while (true)
         {
             if (scopeRows.TryGetValue(sourceRow, out var scopedRow))
             {
                 collectedRows.Add(scopedRow);
                 usedScopeRow = true;
-                continue;
             }
-
-            if (TryGetUniqueGlobalRow(sourceRow, out var uniqueRow))
+            else if (TryGetUniqueGlobalRow(sourceRow, out var uniqueRow))
             {
                 collectedRows.Add(uniqueRow);
-                continue;
+            }
+            else
+            {
+                startTargetRow = 0U;
+                endTargetRow = 0U;
+                return false;
             }
 
-            startTargetRow = 0U;
-            endTargetRow = 0U;
-            return false;
+            if (sourceRow == ascendingEnd)
+            {
+                break;
+            }
+
+            sourceRow++;
         }
 
         if (!usedScopeRow && !string.Equals(scopeId, _rootScopeId, StringComparison.Ordinal))
@@ -1059,16 +1242,31 @@ internal sealed class SpreadsheetRowMapping
 
     public bool TryResolveRangeGlobal(uint startSourceRow, uint endSourceRow, out uint startTargetRow, out uint endTargetRow)
     {
+        if (!SpreadsheetRowBounds.IsValid(startSourceRow) || !SpreadsheetRowBounds.IsValid(endSourceRow))
+        {
+            startTargetRow = 0U;
+            endTargetRow = 0U;
+            return false;
+        }
+
         var ascendingStart = Math.Min(startSourceRow, endSourceRow);
         var ascendingEnd = Math.Max(startSourceRow, endSourceRow);
         var collectedRows = new List<uint>();
 
-        for (uint sourceRow = ascendingStart; sourceRow <= ascendingEnd; sourceRow++)
+        var sourceRow = ascendingStart;
+        while (true)
         {
             if (_rowsBySource.TryGetValue(sourceRow, out var mappedRows))
             {
                 collectedRows.AddRange(mappedRows);
             }
+
+            if (sourceRow == ascendingEnd)
+            {
+                break;
+            }
+
+            sourceRow++;
         }
 
         if (collectedRows.Count == 0)
@@ -1107,6 +1305,17 @@ internal sealed class SpreadsheetRowMapping
 
         startTargetRow = maxRow;
         endTargetRow = minRow;
+    }
+}
+
+internal static class SpreadsheetRowBounds
+{
+    public const uint Minimum = 1U;
+    public const uint Maximum = 1_048_576U;
+
+    public static bool IsValid(uint rowIndex)
+    {
+        return rowIndex >= Minimum && rowIndex <= Maximum;
     }
 }
 
@@ -1236,7 +1445,8 @@ internal readonly struct SpreadsheetCellReference
             return false;
         }
 
-        if (!uint.TryParse(cellPart.Substring(index), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rowIndex))
+        if (!uint.TryParse(cellPart.Substring(index), NumberStyles.Integer, CultureInfo.InvariantCulture, out var rowIndex)
+            || !SpreadsheetRowBounds.IsValid(rowIndex))
         {
             return false;
         }

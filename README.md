@@ -18,9 +18,15 @@
 - `.xlsx` 工作表行循环：把循环/条件标记放在工作表行中，可按行复制输出列表数据，并保留模板行样式
 - `.xlsx` 工作表媒体占位符：在单元格中使用图片/条形码占位符，渲染为 worksheet drawing
 - `.xlsx` 模板行复制时支持合并单元格重建，以及公式中的相对行引用修正
+- `.xlsx` 模板行复制后维护 worksheet/table autoFilter、table reference、defined name 范围，并移除 calcChain 以便 Excel 重新计算
 - `.pptx` slide 级循环/条件：在单个 slide 上使用 `{:expr}`，数组会复制 slide，falsy 会移除 slide，truthy 会保留一次
 - `.pptx` 幻灯片文本占位符：在文本框/形状文字中使用与 `.docx` 相同的路径和格式表达式
+- `.pptx` 媒体占位符：在形状文本中使用图片/条形码标签，渲染为 picture shape
 - 支持 Word 将标签拆分到多个 Run/Text 节点后的渲染（包含表格单元格内格式表达式）
+- `.docx` 扩展内容区域：支持 header/footer、hyperlink 文本和 VML textbox 内文本/循环渲染；header/footer 中的图片和条码关系保存在对应部件中
+- 共享模板内核：DOCX/XLSX/PPTX 复用同一套路径解析、表达式管道、上下文与控制标签语义
+- 渲染诊断选项：通过 `RenderOptions` 控制缺失值行为、收集 warning、设置格式化区域性，并为相对图片路径指定基准目录
+- CLI：支持 render、validate 和 inspect-tags，用于命令行渲染与模板检查
 - 图片标签（参考 docxtemplater image tag 风格）
   - inline：`{%imagePath}`
   - block/居中：`{%%imagePath}`
@@ -147,6 +153,9 @@ VIP 客户
   - 行内公式会按最终行号重写相对引用
   - 模板中的合并单元格区域会随复制后的行块一起展开重建
   - 位于循环块之后的汇总公式，若引用了循环块行范围，也会按最终输出行范围扩展
+  - worksheet/table autoFilter、table reference、defined name 范围会随最终输出行范围扩展
+  - 多工作表的 defined name 按引用的工作表分别映射；未限定工作表的局部名称使用 `LocalSheetId`，不会套用其他工作表的行映射
+  - workbook calcChain 会在渲染后移除，避免 Excel 使用旧计算链
 
 ## PPTX Slide 语法
 
@@ -173,6 +182,9 @@ Slide 3:
 - 当 `expr` 为 truthy 且不是数组时，该 slide 保留一次
 - slide 内其他 `{path|format}` 文本占位符继续按当前 slide 上下文渲染
 - 当前版本聚焦 slide 级重复/条件和文本替换，不在 `.pptx` 中复用 `.docx` 的段落块循环语法
+- 图片/条形码标签可作为单独形状文本使用，渲染时会用 picture shape 替换原文本形状：
+  - 图片：`{%logo}`、`{%%cover}`
+  - 条形码：`{%barcode:code;type=code128;width=180;height=60}`
 
 ## 快速使用
 
@@ -213,6 +225,60 @@ var outputBytes = engine.Render(templateBytes, json);
 File.WriteAllBytes("output.pptx", outputBytes);
 ```
 
+### RenderOptions
+
+默认行为保持兼容：缺失值输出空字符串，格式化使用 `InvariantCulture`，相对图片路径按当前工作目录解析。
+
+如需模板调试或更严格的生产渲染，可以传入 `RenderOptions`：
+
+```csharp
+using NDocxTemplater;
+
+var warnings = new List<RenderWarning>();
+var options = new RenderOptions
+{
+    MissingValueBehavior = MissingValueBehavior.KeepTag,
+    Culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE"),
+    BaseDirectory = AppContext.BaseDirectory,
+    WarningHandler = warnings.Add
+};
+
+var engine = new DocxTemplateEngine();
+var outputBytes = engine.Render(templateBytes, json, options);
+```
+
+缺失值行为：
+
+- `MissingValueBehavior.Empty`：默认值，缺失标签渲染为空字符串
+- `MissingValueBehavior.KeepTag`：缺失标签保持原样，便于人工检查模板
+- `MissingValueBehavior.Throw`：遇到缺失表达式立即抛出异常
+
+`RenderWarning` 当前用于报告缺失表达式，包含 `Code`、`Message` 和 `Expression`。
+
+## CLI
+
+CLI 工程位于 `tools/NDocxTemplater.Cli`，可用于本地渲染、严格验证和模板标签检查：
+
+`inspect-tags` 读取段落/单元格的逻辑文本，支持 DOCX/PPTX 标签跨 Run/Text 节点拆分及 XLSX rich text；不会跨段落拼接标签。
+
+```bash
+dotnet run --project tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
+  inspect-tags --template examples/01-basic-tags/template.docx
+
+dotnet run --project tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
+  validate --template examples/01-basic-tags/template.docx --data examples/01-basic-tags/data.json
+
+dotnet run --project tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
+  render --template examples/01-basic-tags/template.docx --data examples/01-basic-tags/data.json --output /tmp/output.docx
+```
+
+通用选项：
+
+- `--format docx|xlsx|pptx`：不指定时按模板扩展名推断
+- `--missing empty|keep|throw`：控制缺失值行为；`validate` 默认使用 `throw`
+- `--base-dir PATH`：设置相对图片路径的基准目录
+- `--culture CULTURE`：设置格式化区域性
+
 ## NuGet Package
 
 - Package ID: `NDocxTemplater`
@@ -221,7 +287,16 @@ File.WriteAllBytes("output.pptx", outputBytes);
 发布由 GitHub Actions 自动完成：
 
 - CI：`build + test + lint(dotnet format)`
-- 发布：打 tag（如 `v0.1.0`）或手动触发 `Publish NuGet` workflow
+- 发布版本必须在项目、Git tag 与生成的 `.nupkg` 文件之间完全一致。例如，项目版本
+  `1.11.1` 必须使用 tag `v1.11.1`，并生成且只生成一个主包
+  `NDocxTemplater.1.11.1.nupkg`（符号包 `.snupkg` 不计入主包数量）。不一致时 workflow
+  会在推送 NuGet 前失败。
+- 常规发布：推送与项目版本匹配的 `vX.Y.Z` tag。
+- 手动发布：触发 `Publish NuGet` workflow，并同时填写必填的 `version`（不带 `v`，如
+  `1.11.1`）与 `ref`（包含该项目版本的确定 Git ref）。workflow 会 checkout 指定的
+  `ref`，并按同一身份校验规则发布。
+- GitHub hosted CI 与发布 workflow 会启用 NuGet 高危及严重漏洞审计；本地离线 restore
+  默认行为保持不变。
 - NuGet API Key 使用仓库 Secret：`NUGET_API_KEY`
 
 ## Examples
@@ -253,6 +328,11 @@ examples/
   14-xlsx-media-placeholders/
   15-xlsx-merged-cells-and-formulas/
   16-pptx-slide-loop-and-condition/
+  17-render-options-diagnostics/
+  18-docx-headers-footers-textboxes/
+  19-xlsx-range-maintenance/
+  20-pptx-media-placeholders/
+  21-cli-render-validate-inspect/
 ```
 
 各示例说明：
@@ -275,6 +355,11 @@ examples/
   - 该示例额外包含 `chart.png`（用于文件路径模式）
 - `15-xlsx-merged-cells-and-formulas`：`.xlsx` 循环块中的跨行合并单元格，以及模板复制后的公式引用修正
 - `16-pptx-slide-loop-and-condition`：`.pptx` slide 级循环/条件，以及幻灯片文本占位符渲染
+- `17-render-options-diagnostics`：`RenderOptions` 缺失值保留、warning 收集和区域性格式化
+- `18-docx-headers-footers-textboxes`：`.docx` header/footer、hyperlink 和 textbox 内文本/循环渲染
+- `19-xlsx-range-maintenance`：`.xlsx` 循环后维护 table/autoFilter/defined name 范围并清理 calcChain
+- `20-pptx-media-placeholders`：`.pptx` 图片/条形码占位符渲染为 picture shape
+- `21-cli-render-validate-inspect`：CLI `inspect-tags`、`validate` 和 `render` 使用示例
 
 如需重新生成示例资产：
 
@@ -288,7 +373,7 @@ dotnet run --project tools/ExampleGenerator/ExampleGenerator.csproj --disable-bu
 dotnet test NDocxTemplater.sln --disable-build-servers -m:1
 ```
 
-当前测试覆盖了：基础替换、条件、循环、表格映射、`.xlsx` 工作表行循环/条件/样式保留、`.xlsx` 图片/条形码占位符、`.xlsx` 合并单元格与公式引用修正、`.pptx` slide 级循环/条件与文本渲染、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
+当前测试覆盖了：基础替换、条件、循环、表格映射、`.docx` header/footer/hyperlink/textbox 扩展区域、`.xlsx` 工作表行循环/条件/样式保留、`.xlsx` 图片/条形码占位符、`.xlsx` 合并单元格与公式引用修正、`.xlsx` table/autoFilter/defined name/calcChain 维护、`.pptx` slide 级循环/条件与文本渲染、`.pptx` 图片/条形码媒体占位符、CLI render/validate/inspect-tags、`RenderOptions` 缺失值保留/抛错/warning/区域性/相对图片路径、图片渲染（含文件路径/data URI真实 PNG、缩放与等比适配）、条形码渲染（类型/尺寸参数）、排序/截断/计数/格式化、inline 聚合/位次表达式、inline 条件分支、百分比/千分比格式化、表格内拆分 Run 标签格式化。
 
 ## Acknowledgements
 

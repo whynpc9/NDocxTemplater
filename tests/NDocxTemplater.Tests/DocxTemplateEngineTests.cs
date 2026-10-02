@@ -1,14 +1,19 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Validation;
 using DocumentFormat.OpenXml.Wordprocessing;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.PixelFormats;
 using Xunit;
+using A = DocumentFormat.OpenXml.Drawing;
 using DW = DocumentFormat.OpenXml.Drawing.Wordprocessing;
+using PIC = DocumentFormat.OpenXml.Drawing.Pictures;
+using V = DocumentFormat.OpenXml.Vml;
 
 namespace NDocxTemplater.Tests;
 
@@ -243,6 +248,100 @@ public class DocxTemplateEngineTests
     }
 
     [Fact]
+    public void Render_CanKeepMissingTags_AndReportWarnings()
+    {
+        var template = CreateTemplate(
+            Paragraph("Patient: {patient.name}"),
+            Paragraph("Missing: {patient.missing}"));
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            WarningHandler = warnings.Add
+        };
+
+        const string json = @"{ ""patient"": { ""name"": ""Alice"" } }";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json, options));
+
+        Assert.Contains("Patient: Alice", lines);
+        Assert.Contains("Missing: {patient.missing}", lines);
+        var warning = Assert.Single(warnings);
+        Assert.Equal("MissingValue", warning.Code);
+        Assert.Equal("patient.missing", warning.Expression);
+    }
+
+    [Fact]
+    public void Render_CanThrowOnMissingTags()
+    {
+        var template = CreateTemplate(Paragraph("Missing: {patient.missing}"));
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.Throw
+        };
+
+        const string json = @"{ ""patient"": { ""name"": ""Alice"" } }";
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _engine.Render(template, json, options));
+        Assert.Contains("patient.missing", exception.Message);
+    }
+
+    [Fact]
+    public void Render_UsesConfiguredCulture_ForFormatting()
+    {
+        var template = CreateTemplate(
+            Paragraph("Amount: {amount|format:number:#,##0.00}"),
+            Paragraph("Month: {date|format:date:MMMM}"));
+        var options = new RenderOptions
+        {
+            Culture = CultureInfo.GetCultureInfo("de-DE")
+        };
+
+        const string json = @"{
+  ""amount"": 1234.5,
+  ""date"": ""2026-03-18T09:10:11Z""
+}";
+
+        var lines = ReadBodyParagraphTexts(_engine.Render(template, json, options));
+
+        Assert.Contains("Amount: 1.234,50", lines);
+        Assert.Contains("Month: März", lines);
+    }
+
+    [Fact]
+    public void Render_ResolvesRelativeImagePaths_FromConfiguredBaseDirectory()
+    {
+        var imagePath = GetTestAssetPath("real-chart.png");
+        var imageDirectory = Path.GetDirectoryName(imagePath)!;
+        var imageBytes = File.ReadAllBytes(imagePath);
+        var template = CreateTemplate(Paragraph("{%chart}"));
+        var json = @"{
+  ""chart"": {
+    ""src"": ""real-chart.png"",
+    ""maxWidth"": 120,
+    ""preserveAspectRatio"": true
+  }
+}";
+        var options = new RenderOptions
+        {
+            BaseDirectory = imageDirectory
+        };
+
+        var output = _engine.Render(template, json, options);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var embeddedImage = document.MainDocumentPart!.ImageParts.Single();
+            using var imageStream = embeddedImage.GetStream();
+            using var copy = new MemoryStream();
+            imageStream.CopyTo(copy);
+
+            Assert.Equal(imageBytes, copy.ToArray());
+        }
+    }
+
+    [Fact]
     public void Render_RendersInlineImageTag_FromDataUri()
     {
         var template = CreateTemplate(
@@ -264,9 +363,11 @@ public class DocxTemplateEngineTests
         {
             var drawing = document.MainDocumentPart!.Document.Body!.Descendants<Drawing>().Single();
             var extent = drawing.Descendants<DW.Extent>().Single();
+            var drawingId = drawing.Descendants<DW.DocProperties>().Single().Id!.Value;
 
             Assert.Equal(32 * 9525L, extent.Cx!.Value);
             Assert.Equal(16 * 9525L, extent.Cy!.Value);
+            Assert.Equal(1U, drawingId);
         }
     }
 
@@ -321,7 +422,72 @@ public class DocxTemplateEngineTests
         {
             var drawings = document.MainDocumentPart!.Document.Body!.Descendants<Drawing>().ToList();
             Assert.Equal(2, drawings.Count);
+            Assert.Equal(
+                new uint[] { 1, 2 },
+                drawings.Select(static drawing => drawing.Descendants<DW.DocProperties>().Single().Id!.Value));
         }
+    }
+
+    [Fact]
+    public void Render_AllocatesDrawingIdsAfterExistingBodyHeaderAndFooterIds()
+    {
+        var template = CreateTemplateWithExistingDrawingIds(
+            new uint[] { 1, 7 },
+            headerDrawingId: 11,
+            footerDrawingId: 9,
+            textBoxDrawingId: 13,
+            includeImagePlaceholder: true);
+        var json = @"{
+  ""logo"": {
+    ""src"": """ + TinyPngDataUri + @""",
+    ""width"": 16,
+    ""height"": 16
+  }
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var mainPart = document.MainDocumentPart!;
+            var bodyIds = mainPart.Document.Body!
+                .Descendants<DW.DocProperties>()
+                .Select(static properties => properties.Id!.Value)
+                .ToArray();
+            var headerIds = mainPart.HeaderParts.Single().Header!
+                .Descendants<DW.DocProperties>()
+                .Select(static properties => properties.Id!.Value)
+                .ToArray();
+            var footerIds = mainPart.FooterParts.Single().Footer!
+                .Descendants<DW.DocProperties>()
+                .Select(static properties => properties.Id!.Value)
+                .ToArray();
+            var allIds = bodyIds.Concat(headerIds).Concat(footerIds).ToArray();
+
+            Assert.Equal(new uint[] { 1, 7, 13, 14 }, bodyIds);
+            Assert.Equal(new uint[] { 11 }, headerIds);
+            Assert.Equal(new uint[] { 9 }, footerIds);
+            Assert.Equal(allIds.Length, allIds.Distinct().Count());
+            Assert.All(allIds, static id => Assert.True(id > 0));
+            Assert.Empty(new OpenXmlValidator().Validate(document));
+        }
+    }
+
+    [Fact]
+    public void Render_RejectsTemplatesWhenDrawingIdsAreExhausted()
+    {
+        var template = CreateTemplateWithExistingDrawingIds(
+            new uint[] { uint.MaxValue },
+            headerDrawingId: null,
+            footerDrawingId: null,
+            textBoxDrawingId: null,
+            includeImagePlaceholder: true);
+        var json = @"{ ""logo"": """ + TinyPngDataUri + @""" }";
+
+        var exception = Assert.Throws<InvalidOperationException>(() => _engine.Render(template, json));
+
+        Assert.Equal("No more DOCX drawing IDs are available.", exception.Message);
     }
 
     [Fact]
@@ -505,6 +671,44 @@ public class DocxTemplateEngineTests
         Assert.Equal(new[] { "A", "2026-02-24" }, rows[1]);
     }
 
+    [Fact]
+    public void Render_ReplacesTagsInHeadersFootersHyperlinksAndTextBoxes()
+    {
+        var template = CreateTemplateWithExtendedDocxParts();
+
+        const string json = @"{
+  ""patient"": { ""name"": ""Alice"" },
+  ""items"": [
+    { ""name"": ""Alpha"" },
+    { ""name"": ""Beta"" }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = WordprocessingDocument.Open(stream, false))
+        {
+            var mainPart = document.MainDocumentPart!;
+            var bodyText = string.Concat(mainPart.Document.Body!.Elements<Paragraph>().First().Descendants<Text>().Select(static text => text.Text));
+            var hyperlinkText = string.Concat(mainPart.Document.Body!.Descendants<Hyperlink>().Single().Descendants<Text>().Select(static text => text.Text));
+            var textBoxLines = mainPart.Document.Body!.Descendants<TextBoxContent>()
+                .Single()
+                .Elements<Paragraph>()
+                .Select(static paragraph => string.Concat(paragraph.Descendants<Text>().Select(static text => text.Text)))
+                .Where(static text => !string.IsNullOrWhiteSpace(text))
+                .ToArray();
+            var headerText = string.Concat(mainPart.HeaderParts.Single().Header!.Descendants<Text>().Select(static text => text.Text));
+            var footerText = string.Concat(mainPart.FooterParts.Single().Footer!.Descendants<Text>().Select(static text => text.Text));
+
+            Assert.Equal("Body Alice", bodyText);
+            Assert.Equal("Alice", hyperlinkText);
+            Assert.Equal(new[] { "TextBox Alice", "- Alpha", "- Beta" }, textBoxLines);
+            Assert.Equal("Header Alice", headerText);
+            Assert.Equal("Footer Alice", footerText);
+        }
+    }
+
     private static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
     {
         using (var stream = new MemoryStream())
@@ -518,6 +722,257 @@ public class DocxTemplateEngineTests
                 {
                     body.Append(element);
                 }
+
+                mainPart.Document = new Document(body);
+                mainPart.Document.Save();
+            }
+
+            return stream.ToArray();
+        }
+    }
+
+    [Fact]
+    public void Render_AddsImageRelationshipsToTheContainingStoryPart()
+    {
+        using var templateStream = new MemoryStream();
+        templateStream.Write(CreateTemplateWithExtendedDocxParts());
+        templateStream.Position = 0;
+        using (var document = WordprocessingDocument.Open(templateStream, true))
+        {
+            var mainPart = document.MainDocumentPart!;
+            mainPart.Document.Body!.InsertAt(Paragraph("{%logo}"), 0);
+            var header = mainPart.HeaderParts.Single().Header!;
+            header.RemoveAllChildren();
+            header.Append(Paragraph("{#items}"), Paragraph("{%$.logo}"), Paragraph("{/items}"),
+                new Paragraph(new Run(new Picture(new V.Shape(new V.TextBox(
+                    new TextBoxContent(Paragraph("{%logo}"))))
+                { Id = "HeaderImageBox", Style = "width:40pt;height:40pt", Type = "#_x0000_t202" }))));
+            var footer = mainPart.FooterParts.Single().Footer!;
+            footer.RemoveAllChildren();
+            footer.Append(Paragraph("{%logo}"), Paragraph("{%barcode:code;type=code128;width=120;height=40}"));
+        }
+
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            logo = TinyPngDataUri,
+            code = "TEST123",
+            patient = new { name = "Alice" },
+            items = new[] { new { name = "A" }, new { name = "B" } }
+        });
+        var output = _engine.Render(templateStream.ToArray(), json);
+        using var outputStream = new MemoryStream(output);
+        using var result = WordprocessingDocument.Open(outputStream, false);
+        var main = result.MainDocumentPart!;
+        var expectedImage = Convert.FromBase64String(TinyPngDataUri.Split(',')[1]);
+        var owners = new OpenXmlPart[] { main, main.HeaderParts.Single(), main.FooterParts.Single() };
+        var expectedCounts = new[] { 1, 3, 2 };
+        for (var index = 0; index < owners.Length; index++)
+        {
+            var owner = owners[index];
+            var blips = owner.RootElement!.Descendants<A.Blip>().ToArray();
+            Assert.Equal(expectedCounts[index], blips.Length);
+            foreach (var blip in blips)
+            {
+                var image = Assert.IsType<ImagePart>(owner.GetPartById(blip.Embed!.Value!));
+                using var imageStream = image.GetStream();
+                using var bytes = new MemoryStream();
+                imageStream.CopyTo(bytes);
+                if (index != 2 || blip != blips.Last())
+                {
+                    Assert.Equal(expectedImage, bytes.ToArray());
+                }
+                else
+                {
+                    Assert.True(ContainsDarkPixels(bytes.ToArray()));
+                }
+            }
+        }
+
+        var ids = owners.SelectMany(static owner => owner.RootElement!.Descendants<DW.DocProperties>())
+            .Select(static properties => properties.Id!.Value).ToArray();
+        Assert.Equal(ids.Length, ids.Distinct().Count());
+        Assert.Empty(new OpenXmlValidator().Validate(result));
+    }
+
+    private static byte[] CreateTemplateWithExistingDrawingIds(
+        IReadOnlyCollection<uint> bodyDrawingIds,
+        uint? headerDrawingId,
+        uint? footerDrawingId,
+        uint? textBoxDrawingId,
+        bool includeImagePlaceholder)
+    {
+        using (var stream = new MemoryStream())
+        {
+            using (var document = WordprocessingDocument.Create(stream, WordprocessingDocumentType.Document, true))
+            {
+                var mainPart = document.AddMainDocumentPart();
+                var body = new Body();
+
+                foreach (var drawingId in bodyDrawingIds)
+                {
+                    body.Append(new Paragraph(CreateExistingImageRun(mainPart, drawingId)));
+                }
+
+                if (textBoxDrawingId.HasValue)
+                {
+                    body.Append(
+                        new Paragraph(
+                            new Run(
+                                new Picture(
+                                    new V.Shape(
+                                        new V.TextBox(
+                                            new TextBoxContent(
+                                                new Paragraph(CreateExistingImageRun(mainPart, textBoxDrawingId.Value)))))
+                                    {
+                                        Id = "DrawingIdTextBox",
+                                        Style = "width:40pt;height:40pt",
+                                        Type = "#_x0000_t202"
+                                    }))));
+                }
+
+                if (includeImagePlaceholder)
+                {
+                    body.Append(Paragraph("{%logo}"));
+                }
+
+                var sectionProperties = new SectionProperties();
+                if (headerDrawingId.HasValue)
+                {
+                    var headerPart = mainPart.AddNewPart<HeaderPart>();
+                    headerPart.Header = new Header(new Paragraph(CreateExistingImageRun(headerPart, headerDrawingId.Value)));
+                    headerPart.Header.Save();
+                    sectionProperties.Append(
+                        new HeaderReference
+                        {
+                            Type = HeaderFooterValues.Default,
+                            Id = mainPart.GetIdOfPart(headerPart)
+                        });
+                }
+
+                if (footerDrawingId.HasValue)
+                {
+                    var footerPart = mainPart.AddNewPart<FooterPart>();
+                    footerPart.Footer = new Footer(new Paragraph(CreateExistingImageRun(footerPart, footerDrawingId.Value)));
+                    footerPart.Footer.Save();
+                    sectionProperties.Append(
+                        new FooterReference
+                        {
+                            Type = HeaderFooterValues.Default,
+                            Id = mainPart.GetIdOfPart(footerPart)
+                        });
+                }
+
+                body.Append(sectionProperties);
+                mainPart.Document = new Document(body);
+                mainPart.Document.Save();
+            }
+
+            return stream.ToArray();
+        }
+    }
+
+    private static Run CreateExistingImageRun(OpenXmlPartContainer owner, uint drawingId)
+    {
+        var imagePart = owner.AddNewPart<ImagePart>("image/png");
+        using (var imageStream = new MemoryStream(Convert.FromBase64String(TinyPngDataUri.Split(',')[1]), writable: false))
+        {
+            imagePart.FeedData(imageStream);
+        }
+
+        var relationshipId = owner.GetIdOfPart(imagePart);
+        const long extent = 9525L;
+
+        return new Run(
+            new Drawing(
+                new DW.Inline(
+                    new DW.Extent { Cx = extent, Cy = extent },
+                    new DW.EffectExtent
+                    {
+                        LeftEdge = 0L,
+                        TopEdge = 0L,
+                        RightEdge = 0L,
+                        BottomEdge = 0L
+                    },
+                    new DW.DocProperties { Id = drawingId, Name = "Existing image " + drawingId.ToString(CultureInfo.InvariantCulture) },
+                    new DW.NonVisualGraphicFrameDrawingProperties(
+                        new A.GraphicFrameLocks { NoChangeAspect = true }),
+                    new A.Graphic(
+                        new A.GraphicData(
+                            new PIC.Picture(
+                                new PIC.NonVisualPictureProperties(
+                                    new PIC.NonVisualDrawingProperties
+                                    {
+                                        Id = drawingId,
+                                        Name = "Existing image " + drawingId.ToString(CultureInfo.InvariantCulture)
+                                    },
+                                    new PIC.NonVisualPictureDrawingProperties()),
+                                new PIC.BlipFill(
+                                    new A.Blip { Embed = relationshipId },
+                                    new A.Stretch(new A.FillRectangle())),
+                                new PIC.ShapeProperties(
+                                    new A.Transform2D(
+                                        new A.Offset { X = 0L, Y = 0L },
+                                        new A.Extents { Cx = extent, Cy = extent }),
+                                    new A.PresetGeometry(new A.AdjustValueList())
+                                    {
+                                        Preset = A.ShapeTypeValues.Rectangle
+                                    })))
+                        {
+                            Uri = "http://schemas.openxmlformats.org/drawingml/2006/picture"
+                        }))
+                {
+                    DistanceFromTop = 0U,
+                    DistanceFromBottom = 0U,
+                    DistanceFromLeft = 0U,
+                    DistanceFromRight = 0U
+                }));
+    }
+
+    private static byte[] CreateTemplateWithExtendedDocxParts()
+    {
+        using (var stream = new MemoryStream())
+        {
+            using (var document = WordprocessingDocument.Create(stream, WordprocessingDocumentType.Document, true))
+            {
+                var mainPart = document.AddMainDocumentPart();
+
+                var headerPart = mainPart.AddNewPart<HeaderPart>();
+                headerPart.Header = new Header(Paragraph("Header {patient.name}"));
+                headerPart.Header.Save();
+
+                var footerPart = mainPart.AddNewPart<FooterPart>();
+                footerPart.Footer = new Footer(Paragraph("Footer {patient.name}"));
+                footerPart.Footer.Save();
+
+                var headerId = mainPart.GetIdOfPart(headerPart);
+                var footerId = mainPart.GetIdOfPart(footerPart);
+
+                var body = new Body(
+                    Paragraph("Body {patient.name}"),
+                    new Paragraph(
+                        new Run(new Text("Profile ")),
+                        new Hyperlink(new Run(new Text("{patient.name}"))) { Anchor = "profile" }),
+                    new Paragraph(
+                        new Run(
+                            new Picture(
+                                new V.Shape(
+                                    new V.TextBox(
+                                        new TextBoxContent(
+                                            Paragraph("TextBox {patient.name}"),
+                                            Paragraph("{#items}"),
+                                            Paragraph("- {name}"),
+                                            Paragraph("{/items}"))))
+                                {
+                                    Id = "TextBox1",
+                                    Style = "width:200pt;height:80pt",
+                                    Type = "#_x0000_t202"
+                                }))),
+                    new Paragraph(
+                        new BookmarkStart { Id = "1", Name = "profile" },
+                        new BookmarkEnd { Id = "1" }),
+                    new SectionProperties(
+                        new HeaderReference { Type = HeaderFooterValues.Default, Id = headerId },
+                        new FooterReference { Type = HeaderFooterValues.Default, Id = footerId }));
 
                 mainPart.Document = new Document(body);
                 mainPart.Document.Save();

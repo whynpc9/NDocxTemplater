@@ -8,6 +8,7 @@ using NDocxTemplater;
 using A = DocumentFormat.OpenXml.Drawing;
 using P = DocumentFormat.OpenXml.Presentation;
 using S = DocumentFormat.OpenXml.Spreadsheet;
+using V = DocumentFormat.OpenXml.Vml;
 
 var repoRoot = FindRepoRoot(AppContext.BaseDirectory);
 var examplesRoot = Path.Combine(repoRoot, "examples");
@@ -376,6 +377,12 @@ GeneratePresentationExample(
     PresentationSlideSpec.Create("{:users}", "User {name}", "Amount {amount|format:number:0.00}"),
     PresentationSlideSpec.Create("{:showSummary}", "Summary {summaryText}"));
 
+GenerateRenderOptionsExample(examplesRoot);
+GenerateDocxExtendedPartsExample(examplesRoot);
+GenerateWorkbookRangeMaintenanceExample(examplesRoot);
+GeneratePresentationMediaExample(examplesRoot, TinyPngDataUri);
+GenerateCliExample(examplesRoot);
+
 Console.WriteLine($"Generated examples in: {examplesRoot}");
 
 return;
@@ -643,6 +650,232 @@ static void GenerateWorkbookMergeAndFormulaExample(string examplesRoot)
     File.WriteAllBytes(outputPath, outputBytes);
 }
 
+static void GenerateWorkbookRangeMaintenanceExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "19-xlsx-range-maintenance");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.xlsx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.xlsx");
+    var codePath = Path.Combine(dir, "example.cs");
+
+    const string json = """
+        {
+          "lines": [
+            { "name": "Alpha", "amount": 10 },
+            { "name": "Beta", "amount": 20 }
+          ]
+        }
+        """;
+
+    const string sampleCode = """
+        using NDocxTemplater;
+
+        var engine = new XlsxTemplateEngine();
+        var templateBytes = File.ReadAllBytes("template.xlsx");
+        var json = File.ReadAllText("data.json");
+        var output = engine.Render(templateBytes, json);
+        File.WriteAllBytes("output.xlsx", output);
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateWorkbookRangeMaintenanceTemplate();
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new XlsxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    File.WriteAllBytes(outputPath, outputBytes);
+}
+
+static void GenerateRenderOptionsExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "17-render-options-diagnostics");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.docx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.docx");
+    var codePath = Path.Combine(dir, "example.cs");
+    var warningsPath = Path.Combine(dir, "warnings.txt");
+
+    const string json = """
+        {
+          "patient": {
+            "name": "Alice"
+          },
+          "amount": 1234.5
+        }
+        """;
+
+    const string sampleCode = """
+        using NDocxTemplater;
+
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            Culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE"),
+            WarningHandler = warnings.Add
+        };
+
+        var engine = new DocxTemplateEngine();
+        var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"), options);
+
+        File.WriteAllBytes("output.docx", output);
+        File.WriteAllLines("warnings.txt", warnings.Select(warning => $"{warning.Code}: {warning.Expression}"));
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateTemplate(
+        Paragraph("Patient: {patient.name}"),
+        Paragraph("Missing kept for review: {patient.missing}"),
+        Paragraph("Amount with de-DE culture: {amount|format:number:#,##0.00}"));
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var warnings = new List<RenderWarning>();
+    var options = new RenderOptions
+    {
+        MissingValueBehavior = MissingValueBehavior.KeepTag,
+        Culture = System.Globalization.CultureInfo.GetCultureInfo("de-DE"),
+        WarningHandler = warnings.Add
+    };
+    var engine = new DocxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath), options);
+
+    File.WriteAllBytes(outputPath, outputBytes);
+    File.WriteAllLines(warningsPath, warnings.Select(warning => $"{warning.Code}: {warning.Expression}"));
+}
+
+static void GenerateDocxExtendedPartsExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "18-docx-headers-footers-textboxes");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.docx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.docx");
+    var codePath = Path.Combine(dir, "example.cs");
+
+    const string json = """
+        {
+          "patient": {
+            "name": "Alice"
+          },
+          "items": [
+            { "name": "Alpha" },
+            { "name": "Beta" }
+          ]
+        }
+        """;
+
+    const string sampleCode = """
+        using NDocxTemplater;
+
+        var engine = new DocxTemplateEngine();
+        var output = engine.Render(File.ReadAllBytes("template.docx"), File.ReadAllText("data.json"));
+        File.WriteAllBytes("output.docx", output);
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(codePath, sampleCode.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateExtendedDocxTemplate();
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new DocxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    File.WriteAllBytes(outputPath, outputBytes);
+}
+
+static void GeneratePresentationMediaExample(string examplesRoot, string tinyPngDataUri)
+{
+    GeneratePresentationExample(
+        examplesRoot,
+        "20-pptx-media-placeholders",
+        """
+        {
+          "report": {
+            "title": "Media Report"
+          },
+          "logo": {
+            "src": "__TINY_PNG__",
+            "width": 40,
+            "height": 20
+          },
+          "code": "A20260303001"
+        }
+        """.Replace("__TINY_PNG__", tinyPngDataUri),
+        """
+        using NDocxTemplater;
+
+        var engine = new PptxTemplateEngine();
+        var templateBytes = File.ReadAllBytes("template.pptx");
+        var json = File.ReadAllText("data.json");
+        var output = engine.Render(templateBytes, json);
+        File.WriteAllBytes("output.pptx", output);
+        """,
+        PresentationSlideSpec.Create(
+            "Title {report.title}",
+            "{%logo}",
+            "{%barcode:code;type=code128;width=180;height=60}"));
+}
+
+static void GenerateCliExample(string examplesRoot)
+{
+    var dir = Path.Combine(examplesRoot, "21-cli-render-validate-inspect");
+    Directory.CreateDirectory(dir);
+
+    var templatePath = Path.Combine(dir, "template.docx");
+    var dataPath = Path.Combine(dir, "data.json");
+    var outputPath = Path.Combine(dir, "output.docx");
+    var scriptPath = Path.Combine(dir, "example.sh");
+
+    const string json = """
+        {
+          "patient": {
+            "name": "Alice"
+          },
+          "items": [
+            { "name": "Alpha" },
+            { "name": "Beta" }
+          ]
+        }
+        """;
+
+    const string sampleScript = """
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        dotnet run --project ../../tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
+          inspect-tags --template template.docx
+
+        dotnet run --project ../../tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
+          validate --template template.docx --data data.json
+
+        dotnet run --project ../../tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \
+          render --template template.docx --data data.json --output output.docx
+        """;
+
+    File.WriteAllText(dataPath, json.Trim() + Environment.NewLine);
+    File.WriteAllText(scriptPath, sampleScript.Trim() + Environment.NewLine);
+
+    var templateBytes = CreateTemplate(
+        Paragraph("Patient: {patient.name}"),
+        Paragraph("{#items}"),
+        Paragraph("- {name}"),
+        Paragraph("{/items}"));
+    File.WriteAllBytes(templatePath, templateBytes);
+
+    var engine = new DocxTemplateEngine();
+    var outputBytes = engine.Render(templateBytes, File.ReadAllText(dataPath));
+    File.WriteAllBytes(outputPath, outputBytes);
+}
+
 static void GeneratePresentationExample(
     string examplesRoot,
     string name,
@@ -681,6 +914,55 @@ static byte[] CreateTemplate(params OpenXmlElement[] bodyElements)
         {
             body.Append(element);
         }
+
+        mainPart.Document = new Document(body);
+        mainPart.Document.Save();
+    }
+
+    return stream.ToArray();
+}
+
+static byte[] CreateExtendedDocxTemplate()
+{
+    using var stream = new MemoryStream();
+    using (var document = WordprocessingDocument.Create(stream, WordprocessingDocumentType.Document, true))
+    {
+        var mainPart = document.AddMainDocumentPart();
+
+        var headerPart = mainPart.AddNewPart<HeaderPart>();
+        headerPart.Header = new Header(Paragraph("Header {patient.name}"));
+        headerPart.Header.Save();
+
+        var footerPart = mainPart.AddNewPart<FooterPart>();
+        footerPart.Footer = new Footer(Paragraph("Footer {patient.name}"));
+        footerPart.Footer.Save();
+
+        var body = new Body(
+            Paragraph("Body {patient.name}"),
+            new Paragraph(
+                new Run(new Text("Profile ")),
+                new Hyperlink(new Run(new Text("{patient.name}"))) { Anchor = "profile" }),
+            new Paragraph(
+                new Run(
+                    new Picture(
+                        new V.Shape(
+                            new V.TextBox(
+                                new TextBoxContent(
+                                    Paragraph("TextBox {patient.name}"),
+                                    Paragraph("{#items}"),
+                                    Paragraph("- {name}"),
+                                    Paragraph("{/items}"))))
+                        {
+                            Id = "TextBox1",
+                            Style = "width:200pt;height:80pt",
+                            Type = "#_x0000_t202"
+                        }))),
+            new Paragraph(
+                new BookmarkStart { Id = "1", Name = "profile" },
+                new BookmarkEnd { Id = "1" }),
+            new SectionProperties(
+                new HeaderReference { Type = HeaderFooterValues.Default, Id = mainPart.GetIdOfPart(headerPart) },
+                new FooterReference { Type = HeaderFooterValues.Default, Id = mainPart.GetIdOfPart(footerPart) }));
 
         mainPart.Document = new Document(body);
         mainPart.Document.Save();
@@ -863,6 +1145,102 @@ static byte[] CreateAdvancedWorkbookTemplate(IReadOnlyList<string> mergedRanges,
     }
 
     return stream.ToArray();
+}
+
+static byte[] CreateWorkbookRangeMaintenanceTemplate()
+{
+    using var stream = new MemoryStream();
+    using (var document = SpreadsheetDocument.Create(stream, SpreadsheetDocumentType.Workbook, true))
+    {
+        var workbookPart = document.AddWorkbookPart();
+        workbookPart.Workbook = new S.Workbook();
+
+        var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+        sharedStringPart.SharedStringTable = new S.SharedStringTable();
+
+        var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+        var sheetData = new S.SheetData(
+            CreateWorkbookRow(workbookPart, 1, "Name", "Amount", "Calc"),
+            CreateWorkbookRow(workbookPart, 2, "{#lines}", string.Empty, string.Empty),
+            CreateWorkbookRowFromCells(
+                3,
+                CreateWorkbookSharedStringCell(workbookPart, "{name}", "A3"),
+                CreateWorkbookSharedStringCell(workbookPart, "{amount}", "B3"),
+                CreateWorkbookFormulaCell("B3*2", "C3")),
+            CreateWorkbookRow(workbookPart, 4, "{/lines}", string.Empty, string.Empty),
+            CreateWorkbookRowFromCells(
+                5,
+                CreateWorkbookSharedStringCell(workbookPart, "Total", "A5"),
+                CreateWorkbookSharedStringCell(workbookPart, string.Empty, "B5"),
+                CreateWorkbookFormulaCell("SUM(C3:C3)", "C5")));
+
+        worksheetPart.Worksheet = new S.Worksheet(
+            new S.SheetDimension { Reference = "A1:C5" },
+            new S.AutoFilter { Reference = "A1:C5" },
+            sheetData);
+
+        var tableDefinitionPart = worksheetPart.AddNewPart<TableDefinitionPart>("rIdTable1");
+        tableDefinitionPart.Table = new S.Table
+        {
+            Id = 1U,
+            Name = "ReportTable",
+            DisplayName = "ReportTable",
+            Reference = "A1:C5",
+            TotalsRowShown = false
+        };
+        tableDefinitionPart.Table.Append(new S.AutoFilter { Reference = "A1:C5" });
+        tableDefinitionPart.Table.Append(new S.TableColumns(
+            new S.TableColumn { Id = 1U, Name = "Name" },
+            new S.TableColumn { Id = 2U, Name = "Amount" },
+            new S.TableColumn { Id = 3U, Name = "Calc" })
+        { Count = 3U });
+        tableDefinitionPart.Table.Save();
+
+        worksheetPart.Worksheet.Append(new S.TableParts(
+            new S.TablePart { Id = worksheetPart.GetIdOfPart(tableDefinitionPart) })
+        { Count = 1U });
+        worksheetPart.Worksheet.Save();
+
+        workbookPart.Workbook.Append(
+            new S.Sheets(
+                new S.Sheet
+                {
+                    Id = workbookPart.GetIdOfPart(worksheetPart),
+                    SheetId = 1U,
+                    Name = "Report"
+                }),
+            new S.DefinedNames(
+                new S.DefinedName("'Report'!$A$1:$C$5")
+                {
+                    Name = "ReportRange"
+                }));
+
+        var calcChainPart = workbookPart.AddNewPart<CalculationChainPart>();
+        calcChainPart.CalculationChain = new S.CalculationChain(new S.CalculationCell { CellReference = "C5", SheetId = 1 });
+        calcChainPart.CalculationChain.Save();
+
+        workbookPart.Workbook.Save();
+    }
+
+    return stream.ToArray();
+}
+
+static S.Row CreateWorkbookRow(WorkbookPart workbookPart, int rowIndex, params string[] values)
+{
+    return CreateWorkbookRowFromCells(
+        rowIndex,
+        values.Select((value, index) => CreateWorkbookSharedStringCell(workbookPart, value, GetWorkbookCellReference(index + 1, rowIndex))).ToArray());
+}
+
+static S.Row CreateWorkbookRowFromCells(int rowIndex, params S.Cell[] cells)
+{
+    var row = new S.Row { RowIndex = (uint)rowIndex };
+    foreach (var cell in cells)
+    {
+        row.Append(cell);
+    }
+
+    return row;
 }
 
 static S.Stylesheet CreateWorkbookStylesheet()

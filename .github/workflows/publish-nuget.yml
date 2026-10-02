@@ -2,6 +2,15 @@ name: Publish NuGet
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version to publish (for example, 1.11.1)"
+        required: true
+        type: string
+      ref:
+        description: "Git ref containing the matching project version"
+        required: true
+        type: string
   push:
     tags:
       - "v*"
@@ -13,6 +22,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v5
@@ -20,7 +31,7 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Restore
-        run: dotnet restore NDocxTemplater.sln
+        run: dotnet restore NDocxTemplater.sln -p:NuGetAudit=true -p:NuGetAuditLevel=high
 
       - name: Build
         run: dotnet build NDocxTemplater.sln -c Release --no-restore
@@ -28,8 +39,63 @@ jobs:
       - name: Test
         run: dotnet test NDocxTemplater.sln -c Release --no-build --verbosity normal
 
+      - name: Verify release identity
+        id: release_identity
+        shell: bash
+        env:
+          MANUAL_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            expected_version="${GITHUB_REF_NAME#v}"
+          else
+            expected_version="${MANUAL_VERSION}"
+          fi
+
+          if [[ -z "${expected_version}" ]]; then
+            echo "Release version must not be empty." >&2
+            exit 1
+          fi
+
+          project_version="$(dotnet msbuild src/NDocxTemplater/NDocxTemplater.csproj -nologo -getProperty:Version)"
+          if [[ "${project_version}" != "${expected_version}" ]]; then
+            echo "Release identity mismatch: expected '${expected_version}', but the project version is '${project_version}'." >&2
+            exit 1
+          fi
+
+          echo "expected_version=${expected_version}" >> "${GITHUB_OUTPUT}"
+
       - name: Pack
-        run: dotnet pack src/NDocxTemplater/NDocxTemplater.csproj -c Release --no-build -o artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf artifacts
+          dotnet pack src/NDocxTemplater/NDocxTemplater.csproj -c Release --no-build -o artifacts
+
+      - name: Verify package identity
+        id: package_identity
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ steps.release_identity.outputs.expected_version }}
+        run: |
+          set -euo pipefail
+
+          shopt -s nullglob
+          packages=(artifacts/NDocxTemplater.*.nupkg)
+          expected_path="artifacts/NDocxTemplater.${EXPECTED_VERSION}.nupkg"
+
+          if [[ "${#packages[@]}" -ne 1 ]]; then
+            echo "Expected exactly one primary NDocxTemplater package, found ${#packages[@]}." >&2
+            exit 1
+          fi
+
+          if [[ "${packages[0]}" != "${expected_path}" ]]; then
+            echo "Package identity mismatch: expected '${expected_path}', found '${packages[0]}'." >&2
+            exit 1
+          fi
+
+          echo "package_path=${packages[0]}" >> "${GITHUB_OUTPUT}"
 
       - name: Publish to NuGet
-        run: dotnet nuget push "artifacts/*.nupkg" --source "https://api.nuget.org/v3/index.json" --api-key "${{ secrets.NUGET_API_KEY }}" --skip-duplicate
+        run: dotnet nuget push "${{ steps.package_identity.outputs.package_path }}" --source "https://api.nuget.org/v3/index.json" --api-key "${{ secrets.NUGET_API_KEY }}"

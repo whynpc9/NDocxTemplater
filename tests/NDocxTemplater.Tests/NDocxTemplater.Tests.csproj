@@ -21,5 +21,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NDocxTemplater\NDocxTemplater.csproj" />
+    <ProjectReference Include="..\..\tools\NDocxTemplater.Cli\NDocxTemplater.Cli.csproj" />
   </ItemGroup>
 </Project>

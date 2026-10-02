@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Nodes;
+using DocumentFormat.OpenXml;
 using DocumentFormat.OpenXml.Drawing;
 using DocumentFormat.OpenXml.Packaging;
 using A = DocumentFormat.OpenXml.Drawing;
@@ -18,6 +19,11 @@ public sealed class PptxTemplateEngine
 {
     public byte[] Render(byte[] templateBytes, string jsonData)
     {
+        return Render(templateBytes, jsonData, null);
+    }
+
+    public byte[] Render(byte[] templateBytes, string jsonData, RenderOptions? options)
+    {
         if (templateBytes == null)
         {
             throw new ArgumentNullException(nameof(templateBytes));
@@ -26,12 +32,17 @@ public sealed class PptxTemplateEngine
         using (var templateStream = new MemoryStream(templateBytes, writable: false))
         using (var outputStream = new MemoryStream())
         {
-            Render(templateStream, outputStream, jsonData);
+            Render(templateStream, outputStream, jsonData, options);
             return outputStream.ToArray();
         }
     }
 
     public void Render(Stream templateStream, Stream outputStream, string jsonData)
+    {
+        Render(templateStream, outputStream, jsonData, null);
+    }
+
+    public void Render(Stream templateStream, Stream outputStream, string jsonData, RenderOptions? options)
     {
         if (templateStream == null)
         {
@@ -71,7 +82,7 @@ public sealed class PptxTemplateEngine
                 throw new InvalidOperationException("The PPTX template does not contain a valid presentation.");
             }
 
-            var renderer = new PptxPresentationRenderer(document.PresentationPart, rootData);
+            var renderer = new PptxPresentationRenderer(document.PresentationPart, rootData, options);
             renderer.Render();
             document.PresentationPart.Presentation.Save();
         }
@@ -84,11 +95,13 @@ internal sealed class PptxPresentationRenderer
 {
     private readonly PresentationPart _presentationPart;
     private readonly JToken _rootData;
+    private readonly RenderOptions? _options;
 
-    public PptxPresentationRenderer(PresentationPart presentationPart, JToken rootData)
+    public PptxPresentationRenderer(PresentationPart presentationPart, JToken rootData, RenderOptions? options)
     {
         _presentationPart = presentationPart;
         _rootData = rootData;
+        _options = options;
     }
 
     public void Render()
@@ -99,7 +112,7 @@ internal sealed class PptxPresentationRenderer
             return;
         }
 
-        var rootContext = new TemplateContext(_rootData, _rootData, null);
+        var rootContext = new TemplateContext(_rootData, _rootData, null, _options);
         var sourceSlides = slideIdList.Elements<P.SlideId>()
             .Select(slideId => new PptxSourceSlide(
                 slideId,
@@ -175,6 +188,8 @@ internal sealed class PptxPresentationRenderer
 
     private void RenderSlide(SlidePart slidePart, TemplateContext context)
     {
+        PptxMediaRenderer.RenderMediaPlaceholders(slidePart, context);
+
         foreach (var paragraph in slidePart.Slide.Descendants<A.Paragraph>().ToList())
         {
             PptxParagraphRenderer.RenderParagraph(paragraph, context);
@@ -196,6 +211,110 @@ internal sealed class PptxPresentationRenderer
                 RelationshipId = _presentationPart.GetIdOfPart(slidePart)
             });
         }
+    }
+}
+
+internal static class PptxMediaRenderer
+{
+    private const long EmusPerPixel = 9525L;
+
+    public static void RenderMediaPlaceholders(SlidePart slidePart, TemplateContext context)
+    {
+        var nextShapeId = GetNextShapeId(slidePart);
+        foreach (var shape in slidePart.Slide.Descendants<P.Shape>().ToList())
+        {
+            if (!TryGetImageTag(shape, out var imageTag))
+            {
+                continue;
+            }
+
+            var payloads = TemplateMediaResolver.ResolveMany(imageTag.Expression, context).ToList();
+            var insertAfter = (OpenXmlElement?)shape;
+            foreach (var payload in payloads)
+            {
+                var imagePart = slidePart.AddImagePart(payload.ImagePartType);
+                using (var stream = new MemoryStream(payload.Bytes, writable: false))
+                {
+                    imagePart.FeedData(stream);
+                }
+
+                var picture = CreatePicture(
+                    slidePart.GetIdOfPart(imagePart),
+                    shape,
+                    payload,
+                    nextShapeId++);
+
+                if (insertAfter?.Parent != null)
+                {
+                    insertAfter.Parent.InsertAfter(picture, insertAfter);
+                    insertAfter = picture;
+                }
+            }
+
+            shape.Remove();
+        }
+    }
+
+    private static bool TryGetImageTag(P.Shape shape, out ImageTag imageTag)
+    {
+        imageTag = default;
+        var rawText = string.Concat(shape.TextBody?.Descendants<A.Text>().Select(static text => text.Text) ?? Enumerable.Empty<string>()).Trim();
+        if (rawText.Length == 0)
+        {
+            return false;
+        }
+
+        var match = TagPatterns.SingleTagRegex.Match(rawText);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        return ImageTagParser.TryParseToken(match.Groups[1].Value.Trim(), out imageTag);
+    }
+
+    private static P.Picture CreatePicture(string relationId, P.Shape templateShape, ImagePayload payload, uint shapeId)
+    {
+        var transform = templateShape.ShapeProperties?.GetFirstChild<A.Transform2D>();
+        var offset = transform?.Offset?.CloneNode(true) as A.Offset ?? new A.Offset { X = 0L, Y = 0L };
+        var extents = new A.Extents
+        {
+            Cx = PixelsToEmu(payload.WidthPx),
+            Cy = PixelsToEmu(payload.HeightPx)
+        };
+
+        return new P.Picture(
+            new P.NonVisualPictureProperties(
+                new P.NonVisualDrawingProperties
+                {
+                    Id = shapeId,
+                    Name = "Picture " + shapeId.ToString(CultureInfo.InvariantCulture)
+                },
+                new P.NonVisualPictureDrawingProperties(new A.PictureLocks { NoChangeAspect = true }),
+                new P.ApplicationNonVisualDrawingProperties()),
+            new P.BlipFill(
+                new A.Blip { Embed = relationId, CompressionState = A.BlipCompressionValues.Print },
+                new A.Stretch(new A.FillRectangle())),
+            new P.ShapeProperties(
+                new A.Transform2D(offset, extents),
+                new A.PresetGeometry(new A.AdjustValueList())
+                {
+                    Preset = A.ShapeTypeValues.Rectangle
+                }));
+    }
+
+    private static uint GetNextShapeId(SlidePart slidePart)
+    {
+        var maxId = slidePart.Slide.Descendants<P.NonVisualDrawingProperties>()
+            .Select(static properties => properties.Id?.Value ?? 0U)
+            .DefaultIfEmpty(0U)
+            .Max();
+        return maxId + 1U;
+    }
+
+    private static long PixelsToEmu(int pixels)
+    {
+        return Math.Max(1, pixels) * EmusPerPixel;
     }
 }
 
@@ -222,7 +341,13 @@ internal static class PptxParagraphRenderer
                 return string.Empty;
             }
 
-            return ExpressionEvaluator.ToText(ExpressionEvaluator.Evaluate(expression, context));
+            var value = ExpressionEvaluator.Evaluate(expression, context, out var expressionResolved);
+            if (!expressionResolved && context.Options.MissingValueBehavior == MissingValueBehavior.KeepTag)
+            {
+                return match.Value;
+            }
+
+            return ExpressionEvaluator.ToText(value, context);
         });
 
         if (string.Equals(rawText, replaced, StringComparison.Ordinal))

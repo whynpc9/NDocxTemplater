@@ -16,6 +16,87 @@ public class XlsxTemplateEngineTests
 {
     private readonly XlsxTemplateEngine _engine = new XlsxTemplateEngine();
 
+    [Theory]
+    [InlineData("A0", false, 0U)]
+    [InlineData("A1", true, 1U)]
+    [InlineData("XFD1048576", true, SpreadsheetRowBounds.Maximum)]
+    [InlineData("A1048577", false, 0U)]
+    [InlineData("A4294967295", false, 0U)]
+    public void SpreadsheetCellReference_TryParse_EnforcesXlsxRowBounds(string reference, bool expectedResult, uint expectedRow)
+    {
+        var result = SpreadsheetCellReference.TryParse(reference, out var parsed);
+
+        Assert.Equal(expectedResult, result);
+        Assert.Equal(expectedRow, parsed.RowIndex);
+    }
+
+    [Fact]
+    public void SpreadsheetRowMapping_ResolvesMaximumRowWithoutWraparound()
+    {
+        const string scopeId = "scope";
+        var renderedRow = new RenderedSpreadsheetRow(
+            new Row { RowIndex = SpreadsheetRowBounds.Maximum },
+            SpreadsheetRowBounds.Maximum,
+            scopeId)
+        {
+            TargetRowIndex = 42U
+        };
+        var mapping = new SpreadsheetRowMapping(new[] { renderedRow }, "root");
+
+        Assert.True(mapping.TryResolveRangeInScope(
+            scopeId,
+            SpreadsheetRowBounds.Maximum,
+            SpreadsheetRowBounds.Maximum,
+            out var scopedStart,
+            out var scopedEnd));
+        Assert.Equal(42U, scopedStart);
+        Assert.Equal(42U, scopedEnd);
+
+        Assert.True(mapping.TryResolveRangeGlobal(
+            SpreadsheetRowBounds.Maximum,
+            SpreadsheetRowBounds.Maximum,
+            out var globalStart,
+            out var globalEnd));
+        Assert.Equal(42U, globalStart);
+        Assert.Equal(42U, globalEnd);
+    }
+
+    [Theory]
+    [InlineData(0U)]
+    [InlineData(1_048_577U)]
+    [InlineData(uint.MaxValue)]
+    public void SpreadsheetRowMapping_RejectsOutOfBoundsDirectCallers(uint invalidRow)
+    {
+        var renderedRow = new RenderedSpreadsheetRow(new Row { RowIndex = 1U }, 1U, "scope")
+        {
+            TargetRowIndex = 1U
+        };
+        var mapping = new SpreadsheetRowMapping(new[] { renderedRow }, "root");
+
+        Assert.False(mapping.TryResolveRangeInScope("scope", 1U, invalidRow, out var scopedStart, out var scopedEnd));
+        Assert.Equal(0U, scopedStart);
+        Assert.Equal(0U, scopedEnd);
+
+        Assert.False(mapping.TryResolveRangeGlobal(1U, invalidRow, out var globalStart, out var globalEnd));
+        Assert.Equal(0U, globalStart);
+        Assert.Equal(0U, globalEnd);
+    }
+
+    [Theory]
+    [InlineData("A1:A1048577")]
+    [InlineData("A1:A4294967295")]
+    public void Render_PreservesMalformedOutOfBoundsRangeWithoutIteratingIt(string invalidRange)
+    {
+        var template = CreateWorkbookWithAutoFilterReference(invalidRange);
+
+        var output = _engine.Render(template, "{}");
+
+        using var stream = new MemoryStream(output);
+        using var document = SpreadsheetDocument.Open(stream, false);
+        var autoFilter = document.WorkbookPart!.WorksheetParts.First().Worksheet.GetFirstChild<AutoFilter>();
+        Assert.Equal(invalidRange, autoFilter!.Reference!.Value);
+    }
+
     [Fact]
     public void Render_ReplacesWorksheetCellTags_AndKeepsTypedNumericValues()
     {
@@ -40,6 +121,30 @@ public class XlsxTemplateEngineTests
         Assert.Equal(new[] { "Report", "Sales Summary" }, rows[0].Values);
         Assert.Equal(new[] { "Report date", "2026-03-18" }, rows[1].Values);
         Assert.Equal(new[] { "Orders count", "3" }, rows[2].Values);
+    }
+
+    [Fact]
+    public void Render_CanKeepMissingWorksheetTags()
+    {
+        var template = CreateWorkbook(
+            RowSpec.Create("Full tag", "{report.missing}"),
+            RowSpec.Create("Inline tag", "Value: {report.missing}"));
+        var warnings = new List<RenderWarning>();
+        var options = new RenderOptions
+        {
+            MissingValueBehavior = MissingValueBehavior.KeepTag,
+            WarningHandler = warnings.Add
+        };
+
+        const string json = @"{ ""report"": { ""title"": ""Sales Summary"" } }";
+
+        var output = _engine.Render(template, json, options);
+        var rows = ReadSheetRows(output);
+
+        Assert.Equal(new[] { "Full tag", "{report.missing}" }, rows[0].Values);
+        Assert.Equal(new[] { "Inline tag", "Value: {report.missing}" }, rows[1].Values);
+        Assert.Equal(2, warnings.Count);
+        Assert.All(warnings, warning => Assert.Equal("report.missing", warning.Expression));
     }
 
     [Fact]
@@ -150,6 +255,29 @@ public class XlsxTemplateEngineTests
         }
     }
 
+    [Theory]
+    [InlineData("A1", "C1", "C1")]
+    [InlineData(null, "C1", "C1")]
+    [InlineData("C1", null, "D1")]
+    [InlineData("C1", "not-a-reference", "D1")]
+    public void Render_AnchorsMediaUsingSparseCellReferences(
+        string? leadingCellReference,
+        string? mediaCellReference,
+        string expectedAnchor)
+    {
+        var imagePath = GetTestAssetPath("real-chart.png");
+        var template = CreateWorkbookWithReferencedMediaCells(leadingCellReference, mediaCellReference);
+        var json = "{\"image\":{\"src\":\"" + EscapeJsonString(imagePath) + "\"}}";
+
+        var output = _engine.Render(template, json);
+
+        using var stream = new MemoryStream(output);
+        using var document = SpreadsheetDocument.Open(stream, false);
+        var worksheetPart = document.WorkbookPart!.WorksheetParts.First();
+        var anchor = Assert.Single(worksheetPart.DrawingsPart!.WorksheetDrawing!.Elements<OneCellAnchor>());
+        Assert.Equal(expectedAnchor, AnchorToCell(anchor));
+    }
+
     [Fact]
     public void Render_RepeatsMergedRanges_AndAdjustsFormulaReferences()
     {
@@ -192,6 +320,109 @@ public class XlsxTemplateEngineTests
 
             Assert.Equal(new[] { "A2:A3", "A4:A5" }, mergedRefs);
         }
+    }
+
+    [Fact]
+    public void Render_UpdatesTablesFiltersDefinedNames_AndRemovesCalcChain()
+    {
+        var template = CreateWorkbookWithRangeMetadata();
+
+        const string json = @"{
+  ""lines"": [
+    { ""name"": ""Alpha"", ""amount"": 10 },
+    { ""name"": ""Beta"", ""amount"": 20 }
+  ]
+}";
+
+        var output = _engine.Render(template, json);
+        var rows = ReadSheetRows(output);
+
+        Assert.Equal(4, rows.Count);
+        Assert.Equal(new[] { "Name", "Amount", "Status" }, rows[0].Values);
+        Assert.Equal(new[] { "Alpha", "10", "B2*2" }, rows[1].Values);
+        Assert.Equal(new[] { "Beta", "20", "B3*2" }, rows[2].Values);
+        Assert.Equal(new[] { "Total", string.Empty, "SUM(C2:C3)" }, rows[3].Values);
+
+        using (var stream = new MemoryStream(output))
+        using (var document = SpreadsheetDocument.Open(stream, false))
+        {
+            var workbookPart = document.WorkbookPart!;
+            var worksheetPart = workbookPart.WorksheetParts.First();
+            var table = worksheetPart.TableDefinitionParts.Single().Table;
+            var definedName = workbookPart.Workbook.DefinedNames!.Elements<DefinedName>().Single();
+
+            Assert.Equal("A1:C4", worksheetPart.Worksheet.GetFirstChild<AutoFilter>()!.Reference!.Value);
+            Assert.Equal("A1:C4", table.Reference!.Value);
+            Assert.Equal("A1:C4", table.AutoFilter!.Reference!.Value);
+            Assert.Equal("'Report'!$A$1:$C$4", definedName.Text);
+            Assert.Null(workbookPart.CalculationChainPart);
+        }
+    }
+
+    [Theory]
+    [InlineData(1, 4, "First")]
+    [InlineData(0, 3, "First")]
+    [InlineData(2, 4, "统计表")]
+    [InlineData(1, 4, "2024")]
+    public void Render_RewritesDefinedNamesOnlyWithTheirOwningSheetMapping(int firstCount, int secondCount, string firstSheetName)
+    {
+        using var templateStream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(templateStream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook(new Sheets());
+            workbookPart.AddNewPart<SharedStringTablePart>().SharedStringTable = new SharedStringTable();
+            var sheetNames = new[] { firstSheetName, "O'Brien Data" };
+            for (var index = 0; index < sheetNames.Length; index++)
+            {
+                var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+                var expression = index == 0 ? "first" : "second";
+                worksheetPart.Worksheet = new Worksheet(new SheetData(
+                    CreateRow(workbookPart, 1, "Header"),
+                    CreateRow(workbookPart, 2, "{#" + expression + "}"),
+                    CreateRow(workbookPart, 3, "{name}"),
+                    CreateRow(workbookPart, 4, "{/" + expression + "}"),
+                    CreateRow(workbookPart, 5, "Footer")));
+                workbookPart.Workbook.Sheets!.Append(new Sheet
+                {
+                    Id = workbookPart.GetIdOfPart(worksheetPart),
+                    SheetId = (uint)(17 + index * 25),
+                    Name = sheetNames[index]
+                });
+            }
+
+            workbookPart.Workbook.Append(new DefinedNames(
+                new DefinedName(firstSheetName + "!$A$1:$A$5") { Name = "FirstRange" },
+                new DefinedName("'O''Brien Data'!$A$1:$A$5") { Name = "SecondRange" },
+                new DefinedName("$A$1:$A$5") { Name = "LocalRange", LocalSheetId = 1U },
+                new DefinedName(firstSheetName + "!$A$1:$A$5") { Name = "OtherSheet", LocalSheetId = 1U },
+                new DefinedName(firstSheetName + "!$A$1:$A$5,'O''Brien Data'!$A$1:$A$5") { Name = "UnionRange" },
+                new DefinedName("$A$1:$A$5") { Name = "UnqualifiedGlobal" },
+                new DefinedName("'Unknown'!$A$1:$A$5") { Name = "UnknownSheet" },
+                new DefinedName("[Other.xlsx]" + firstSheetName + "!$A$1:$A$5") { Name = "ExternalRange", LocalSheetId = 0U }));
+            workbookPart.Workbook.Save();
+        }
+
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            first = Enumerable.Range(0, firstCount).Select(static index => new { name = "First " + index }).ToArray(),
+            second = Enumerable.Range(0, secondCount).Select(static index => new { name = "Second " + index }).ToArray()
+        });
+        var output = _engine.Render(templateStream.ToArray(), json);
+        using var outputStream = new MemoryStream(output);
+        using var result = SpreadsheetDocument.Open(outputStream, false);
+        var names = result.WorkbookPart!.Workbook.DefinedNames!.Elements<DefinedName>()
+            .ToDictionary(static name => name.Name!.Value!, static name => name.Text);
+        var firstRange = firstSheetName + "!$A$1:$A$" + (firstCount + 2);
+        var secondRange = "'O''Brien Data'!$A$1:$A$" + (secondCount + 2);
+        Assert.Equal(firstRange, names["FirstRange"]);
+        Assert.Equal(secondRange, names["SecondRange"]);
+        Assert.Equal("$A$1:$A$" + (secondCount + 2), names["LocalRange"]);
+        Assert.Equal(firstRange, names["OtherSheet"]);
+        Assert.Equal(firstRange + "," + secondRange, names["UnionRange"]);
+        Assert.Equal("$A$1:$A$5", names["UnqualifiedGlobal"]);
+        Assert.Equal("'Unknown'!$A$1:$A$5", names["UnknownSheet"]);
+        Assert.Equal("[Other.xlsx]" + firstSheetName + "!$A$1:$A$5", names["ExternalRange"]);
     }
 
     private static byte[] CreateWorkbook(params RowSpec[] rows)
@@ -272,6 +503,177 @@ public class XlsxTemplateEngineTests
 
             return stream.ToArray();
         }
+    }
+
+    private static byte[] CreateWorkbookWithRangeMetadata()
+    {
+        using (var stream = new MemoryStream())
+        {
+            using (var document = SpreadsheetDocument.Create(stream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+            {
+                var workbookPart = document.AddWorkbookPart();
+                workbookPart.Workbook = new Workbook();
+
+                var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+                sharedStringPart.SharedStringTable = new SharedStringTable();
+
+                var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+                var sheetData = new SheetData(
+                    CreateRow(workbookPart, 1, "Name", "Amount", "Status"),
+                    CreateRow(workbookPart, 2, "{#lines}", string.Empty, string.Empty),
+                    CreateRow(
+                        3,
+                        CreateSharedStringCell(workbookPart, "{name}", "A3"),
+                        CreateSharedStringCell(workbookPart, "{amount}", "B3"),
+                        CreateFormulaCell("B3*2", "C3")),
+                    CreateRow(workbookPart, 4, "{/lines}", string.Empty, string.Empty),
+                    CreateRow(
+                        5,
+                        CreateSharedStringCell(workbookPart, "Total", "A5"),
+                        CreateSharedStringCell(workbookPart, string.Empty, "B5"),
+                        CreateFormulaCell("SUM(C3:C3)", "C5")));
+
+                worksheetPart.Worksheet = new Worksheet(
+                    new SheetDimension { Reference = "A1:C5" },
+                    new AutoFilter { Reference = "A1:C5" },
+                    sheetData);
+
+                var tableDefinitionPart = worksheetPart.AddNewPart<TableDefinitionPart>("rIdTable1");
+                tableDefinitionPart.Table = new Table
+                {
+                    Id = 1U,
+                    Name = "ReportTable",
+                    DisplayName = "ReportTable",
+                    Reference = "A1:C5",
+                    TotalsRowShown = false
+                };
+                tableDefinitionPart.Table.Append(new AutoFilter { Reference = "A1:C5" });
+                tableDefinitionPart.Table.Append(new TableColumns(
+                    new TableColumn { Id = 1U, Name = "Name" },
+                    new TableColumn { Id = 2U, Name = "Amount" },
+                    new TableColumn { Id = 3U, Name = "Status" })
+                { Count = 3U });
+                tableDefinitionPart.Table.Save();
+
+                worksheetPart.Worksheet.Append(new TableParts(
+                    new TablePart { Id = worksheetPart.GetIdOfPart(tableDefinitionPart) })
+                { Count = 1U });
+                worksheetPart.Worksheet.Save();
+
+                workbookPart.Workbook.Append(
+                    new Sheets(
+                        new Sheet
+                        {
+                            Id = workbookPart.GetIdOfPart(worksheetPart),
+                            SheetId = 1U,
+                            Name = "Report"
+                        }),
+                    new DefinedNames(
+                        new DefinedName("'Report'!$A$1:$C$5")
+                        {
+                            Name = "ReportRange"
+                        }));
+
+                var calcChainPart = workbookPart.AddNewPart<CalculationChainPart>();
+                calcChainPart.CalculationChain = new CalculationChain(new CalculationCell { CellReference = "C5", SheetId = 1 });
+                calcChainPart.CalculationChain.Save();
+
+                workbookPart.Workbook.Save();
+            }
+
+            return stream.ToArray();
+        }
+    }
+
+    private static byte[] CreateWorkbookWithReferencedMediaCells(string? leadingCellReference, string? mediaCellReference)
+    {
+        using var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+
+            var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+            sharedStringPart.SharedStringTable = new SharedStringTable();
+
+            var cells = new List<Cell>();
+            if (leadingCellReference != null)
+            {
+                cells.Add(CreateSharedStringCell(workbookPart, "Label", leadingCellReference));
+            }
+
+            var mediaCell = CreateSharedStringCell(workbookPart, "{%image}", mediaCellReference ?? "A1");
+            mediaCell.CellReference = mediaCellReference;
+            cells.Add(mediaCell);
+
+            var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+            worksheetPart.Worksheet = new Worksheet(
+                new SheetDimension { Reference = "A1:D1" },
+                new SheetData(CreateRow(1, cells.ToArray())));
+            worksheetPart.Worksheet.Save();
+
+            workbookPart.Workbook.Append(
+                new Sheets(
+                    new Sheet
+                    {
+                        Id = workbookPart.GetIdOfPart(worksheetPart),
+                        SheetId = 1U,
+                        Name = "Report"
+                    }));
+            workbookPart.Workbook.Save();
+        }
+
+        return stream.ToArray();
+    }
+
+    private static byte[] CreateWorkbookWithAutoFilterReference(string reference)
+    {
+        using var stream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(stream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook();
+
+            var sharedStringPart = workbookPart.AddNewPart<SharedStringTablePart>();
+            sharedStringPart.SharedStringTable = new SharedStringTable();
+
+            var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+            worksheetPart.Worksheet = new Worksheet(
+                new SheetDimension { Reference = "A1" },
+                new AutoFilter { Reference = reference },
+                new SheetData(CreateRow(workbookPart, 1, "Value")));
+            worksheetPart.Worksheet.Save();
+
+            workbookPart.Workbook.Append(
+                new Sheets(
+                    new Sheet
+                    {
+                        Id = workbookPart.GetIdOfPart(worksheetPart),
+                        SheetId = 1U,
+                        Name = "Report"
+                    }));
+            workbookPart.Workbook.Save();
+        }
+
+        return stream.ToArray();
+    }
+
+    private static Row CreateRow(WorkbookPart workbookPart, int rowIndex, params string[] values)
+    {
+        return CreateRow(
+            rowIndex,
+            values.Select((value, index) => CreateSharedStringCell(workbookPart, value, GetCellReference(index + 1, rowIndex))).ToArray());
+    }
+
+    private static Row CreateRow(int rowIndex, params Cell[] cells)
+    {
+        var row = new Row { RowIndex = (uint)rowIndex };
+        foreach (var cell in cells)
+        {
+            row.Append(cell);
+        }
+
+        return row;
     }
 
     private static Cell CreateSharedStringCell(WorkbookPart workbookPart, string text, string cellReference)
