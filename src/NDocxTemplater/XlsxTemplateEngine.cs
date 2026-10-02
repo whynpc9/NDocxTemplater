@@ -1000,7 +1000,7 @@ internal static class SpreadsheetRangeMaintenanceHelper
     {
         UpdateWorksheetAutoFilter(worksheetPart.Worksheet, mapping);
         UpdateTableDefinitions(worksheetPart, mapping);
-        UpdateDefinedNames(workbookPart, mapping);
+        UpdateDefinedNames(workbookPart, worksheetPart, mapping);
         RemoveCalculationChain(workbookPart);
     }
 
@@ -1039,13 +1039,23 @@ internal static class SpreadsheetRangeMaintenanceHelper
         }
     }
 
-    private static void UpdateDefinedNames(WorkbookPart workbookPart, SpreadsheetRowMapping mapping)
+    private static void UpdateDefinedNames(WorkbookPart workbookPart, WorksheetPart worksheetPart, SpreadsheetRowMapping mapping)
     {
         var definedNames = workbookPart.Workbook.DefinedNames;
         if (definedNames == null)
         {
             return;
         }
+
+        var sheets = workbookPart.Workbook.Sheets?.Elements<S.Sheet>().ToArray() ?? Array.Empty<S.Sheet>();
+        var relationshipId = workbookPart.GetIdOfPart(worksheetPart);
+        var sheetIndex = Array.FindIndex(sheets, sheet => sheet.Id?.Value == relationshipId);
+        if (sheetIndex < 0)
+        {
+            return;
+        }
+
+        var sheetName = sheets[sheetIndex].Name?.Value;
 
         foreach (var definedName in definedNames.Elements<S.DefinedName>())
         {
@@ -1054,7 +1064,9 @@ internal static class SpreadsheetRangeMaintenanceHelper
                 continue;
             }
 
-            definedName.Text = RewriteFormulaLikeRanges(definedName.Text!, mapping);
+            definedName.Text = RewriteFormulaLikeRanges(
+                definedName.Text!, mapping, sheetName,
+                definedName.LocalSheetId?.Value == (uint)sheetIndex);
         }
     }
 
@@ -1066,12 +1078,24 @@ internal static class SpreadsheetRangeMaintenanceHelper
         }
     }
 
-    private static string RewriteFormulaLikeRanges(string text, SpreadsheetRowMapping mapping)
+    private static string RewriteFormulaLikeRanges(string text, SpreadsheetRowMapping mapping, string? sheetName, bool isLocalToSheet)
     {
         return Regex.Replace(
             text,
-            @"(?<range>(?:(?:'[^']+'|[A-Za-z_][A-Za-z0-9_.]*)!)?\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+)",
-            match => RewriteRangeReference(match.Groups["range"].Value, mapping));
+            @"(?<![\p{L}\p{N}_.'!\]])(?<range>(?:(?<sheet>'(?:[^']|'')+'|(?:\[[^\]]+\])?[\p{L}\p{N}_][\p{L}\p{N}_.]*)!)?\$?[A-Z]{1,3}\$?\d+:\$?[A-Z]{1,3}\$?\d+)",
+            match =>
+            {
+                var referencedSheet = match.Groups["sheet"].Value;
+                if (referencedSheet.StartsWith("'", StringComparison.Ordinal))
+                {
+                    referencedSheet = referencedSheet.Substring(1, referencedSheet.Length - 2).Replace("''", "'");
+                }
+
+                var ownsRange = match.Groups["sheet"].Success
+                    ? string.Equals(referencedSheet, sheetName, StringComparison.OrdinalIgnoreCase)
+                    : isLocalToSheet;
+                return ownsRange ? RewriteRangeReference(match.Groups["range"].Value, mapping) : match.Value;
+            });
     }
 
     private static string RewriteRangeReference(string? reference, SpreadsheetRowMapping mapping)

@@ -359,6 +359,72 @@ public class XlsxTemplateEngineTests
         }
     }
 
+    [Theory]
+    [InlineData(1, 4, "First")]
+    [InlineData(0, 3, "First")]
+    [InlineData(2, 4, "统计表")]
+    [InlineData(1, 4, "2024")]
+    public void Render_RewritesDefinedNamesOnlyWithTheirOwningSheetMapping(int firstCount, int secondCount, string firstSheetName)
+    {
+        using var templateStream = new MemoryStream();
+        using (var document = SpreadsheetDocument.Create(templateStream, DocumentFormat.OpenXml.SpreadsheetDocumentType.Workbook, true))
+        {
+            var workbookPart = document.AddWorkbookPart();
+            workbookPart.Workbook = new Workbook(new Sheets());
+            workbookPart.AddNewPart<SharedStringTablePart>().SharedStringTable = new SharedStringTable();
+            var sheetNames = new[] { firstSheetName, "O'Brien Data" };
+            for (var index = 0; index < sheetNames.Length; index++)
+            {
+                var worksheetPart = workbookPart.AddNewPart<WorksheetPart>();
+                var expression = index == 0 ? "first" : "second";
+                worksheetPart.Worksheet = new Worksheet(new SheetData(
+                    CreateRow(workbookPart, 1, "Header"),
+                    CreateRow(workbookPart, 2, "{#" + expression + "}"),
+                    CreateRow(workbookPart, 3, "{name}"),
+                    CreateRow(workbookPart, 4, "{/" + expression + "}"),
+                    CreateRow(workbookPart, 5, "Footer")));
+                workbookPart.Workbook.Sheets!.Append(new Sheet
+                {
+                    Id = workbookPart.GetIdOfPart(worksheetPart),
+                    SheetId = (uint)(17 + index * 25),
+                    Name = sheetNames[index]
+                });
+            }
+
+            workbookPart.Workbook.Append(new DefinedNames(
+                new DefinedName(firstSheetName + "!$A$1:$A$5") { Name = "FirstRange" },
+                new DefinedName("'O''Brien Data'!$A$1:$A$5") { Name = "SecondRange" },
+                new DefinedName("$A$1:$A$5") { Name = "LocalRange", LocalSheetId = 1U },
+                new DefinedName(firstSheetName + "!$A$1:$A$5") { Name = "OtherSheet", LocalSheetId = 1U },
+                new DefinedName(firstSheetName + "!$A$1:$A$5,'O''Brien Data'!$A$1:$A$5") { Name = "UnionRange" },
+                new DefinedName("$A$1:$A$5") { Name = "UnqualifiedGlobal" },
+                new DefinedName("'Unknown'!$A$1:$A$5") { Name = "UnknownSheet" },
+                new DefinedName("[Other.xlsx]" + firstSheetName + "!$A$1:$A$5") { Name = "ExternalRange", LocalSheetId = 0U }));
+            workbookPart.Workbook.Save();
+        }
+
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            first = Enumerable.Range(0, firstCount).Select(static index => new { name = "First " + index }).ToArray(),
+            second = Enumerable.Range(0, secondCount).Select(static index => new { name = "Second " + index }).ToArray()
+        });
+        var output = _engine.Render(templateStream.ToArray(), json);
+        using var outputStream = new MemoryStream(output);
+        using var result = SpreadsheetDocument.Open(outputStream, false);
+        var names = result.WorkbookPart!.Workbook.DefinedNames!.Elements<DefinedName>()
+            .ToDictionary(static name => name.Name!.Value!, static name => name.Text);
+        var firstRange = firstSheetName + "!$A$1:$A$" + (firstCount + 2);
+        var secondRange = "'O''Brien Data'!$A$1:$A$" + (secondCount + 2);
+        Assert.Equal(firstRange, names["FirstRange"]);
+        Assert.Equal(secondRange, names["SecondRange"]);
+        Assert.Equal("$A$1:$A$" + (secondCount + 2), names["LocalRange"]);
+        Assert.Equal(firstRange, names["OtherSheet"]);
+        Assert.Equal(firstRange + "," + secondRange, names["UnionRange"]);
+        Assert.Equal("$A$1:$A$5", names["UnqualifiedGlobal"]);
+        Assert.Equal("'Unknown'!$A$1:$A$5", names["UnknownSheet"]);
+        Assert.Equal("[Other.xlsx]" + firstSheetName + "!$A$1:$A$5", names["ExternalRange"]);
+    }
+
     private static byte[] CreateWorkbook(params RowSpec[] rows)
     {
         return CreateWorkbook(Array.Empty<string>(), rows);

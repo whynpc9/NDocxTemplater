@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 
 namespace NDocxTemplater.Cli;
 
@@ -121,10 +122,28 @@ public static class CliApplication
     {
         using (var reader = new StreamReader(entry.Open()))
         {
-            var xml = reader.ReadToEnd();
-            foreach (Match match in TagRegex.Matches(xml))
+            var xml = XDocument.Load(reader);
+            XNamespace word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            XNamespace drawing = "http://schemas.openxmlformats.org/drawingml/2006/main";
+            XNamespace spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+            var containers = xml.Descendants().Where(element =>
+                element.Name == word + "p" || element.Name == drawing + "p"
+                || element.Name == spreadsheet + "si" || element.Name == spreadsheet + "is"
+                || element.Name == spreadsheet + "f");
+            foreach (var container in containers)
             {
-                yield return match.Groups[1].Value;
+                var text = container.Name == spreadsheet + "f"
+                    ? container.Value
+                    : string.Concat(container.Descendants().Where(element =>
+                        (element.Name == word + "t" || element.Name == drawing + "t" || element.Name == spreadsheet + "t")
+                        && element.Ancestors().FirstOrDefault(ancestor =>
+                            ancestor.Name == word + "p" || ancestor.Name == drawing + "p"
+                            || ancestor.Name == spreadsheet + "si" || ancestor.Name == spreadsheet + "is") == container)
+                        .Select(static element => element.Value));
+                foreach (Match match in TagRegex.Matches(text))
+                {
+                    yield return match.Groups[1].Value;
+                }
             }
         }
     }

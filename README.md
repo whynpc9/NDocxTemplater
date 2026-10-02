@@ -23,7 +23,7 @@
 - `.pptx` 幻灯片文本占位符：在文本框/形状文字中使用与 `.docx` 相同的路径和格式表达式
 - `.pptx` 媒体占位符：在形状文本中使用图片/条形码标签，渲染为 picture shape
 - 支持 Word 将标签拆分到多个 Run/Text 节点后的渲染（包含表格单元格内格式表达式）
-- `.docx` 扩展内容区域：支持 header/footer、hyperlink 文本和 VML textbox 内文本/循环渲染
+- `.docx` 扩展内容区域：支持 header/footer、hyperlink 文本和 VML textbox 内文本/循环渲染；header/footer 中的图片和条码关系保存在对应部件中
 - 共享模板内核：DOCX/XLSX/PPTX 复用同一套路径解析、表达式管道、上下文与控制标签语义
 - 渲染诊断选项：通过 `RenderOptions` 控制缺失值行为、收集 warning、设置格式化区域性，并为相对图片路径指定基准目录
 - CLI：支持 render、validate 和 inspect-tags，用于命令行渲染与模板检查
@@ -154,6 +154,7 @@ VIP 客户
   - 模板中的合并单元格区域会随复制后的行块一起展开重建
   - 位于循环块之后的汇总公式，若引用了循环块行范围，也会按最终输出行范围扩展
   - worksheet/table autoFilter、table reference、defined name 范围会随最终输出行范围扩展
+  - 多工作表的 defined name 按引用的工作表分别映射；未限定工作表的局部名称使用 `LocalSheetId`，不会套用其他工作表的行映射
   - workbook calcChain 会在渲染后移除，避免 Excel 使用旧计算链
 
 ## PPTX Slide 语法
@@ -257,6 +258,8 @@ var outputBytes = engine.Render(templateBytes, json, options);
 ## CLI
 
 CLI 工程位于 `tools/NDocxTemplater.Cli`，可用于本地渲染、严格验证和模板标签检查：
+
+`inspect-tags` 读取段落/单元格的逻辑文本，支持 DOCX/PPTX 标签跨 Run/Text 节点拆分及 XLSX rich text；不会跨段落拼接标签。
 
 ```bash
 dotnet run --project tools/NDocxTemplater.Cli/NDocxTemplater.Cli.csproj -- \

@@ -731,6 +731,69 @@ public class DocxTemplateEngineTests
         }
     }
 
+    [Fact]
+    public void Render_AddsImageRelationshipsToTheContainingStoryPart()
+    {
+        using var templateStream = new MemoryStream();
+        templateStream.Write(CreateTemplateWithExtendedDocxParts());
+        templateStream.Position = 0;
+        using (var document = WordprocessingDocument.Open(templateStream, true))
+        {
+            var mainPart = document.MainDocumentPart!;
+            mainPart.Document.Body!.InsertAt(Paragraph("{%logo}"), 0);
+            var header = mainPart.HeaderParts.Single().Header!;
+            header.RemoveAllChildren();
+            header.Append(Paragraph("{#items}"), Paragraph("{%$.logo}"), Paragraph("{/items}"),
+                new Paragraph(new Run(new Picture(new V.Shape(new V.TextBox(
+                    new TextBoxContent(Paragraph("{%logo}"))))
+                { Id = "HeaderImageBox", Style = "width:40pt;height:40pt", Type = "#_x0000_t202" }))));
+            var footer = mainPart.FooterParts.Single().Footer!;
+            footer.RemoveAllChildren();
+            footer.Append(Paragraph("{%logo}"), Paragraph("{%barcode:code;type=code128;width=120;height=40}"));
+        }
+
+        var json = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            logo = TinyPngDataUri,
+            code = "TEST123",
+            patient = new { name = "Alice" },
+            items = new[] { new { name = "A" }, new { name = "B" } }
+        });
+        var output = _engine.Render(templateStream.ToArray(), json);
+        using var outputStream = new MemoryStream(output);
+        using var result = WordprocessingDocument.Open(outputStream, false);
+        var main = result.MainDocumentPart!;
+        var expectedImage = Convert.FromBase64String(TinyPngDataUri.Split(',')[1]);
+        var owners = new OpenXmlPart[] { main, main.HeaderParts.Single(), main.FooterParts.Single() };
+        var expectedCounts = new[] { 1, 3, 2 };
+        for (var index = 0; index < owners.Length; index++)
+        {
+            var owner = owners[index];
+            var blips = owner.RootElement!.Descendants<A.Blip>().ToArray();
+            Assert.Equal(expectedCounts[index], blips.Length);
+            foreach (var blip in blips)
+            {
+                var image = Assert.IsType<ImagePart>(owner.GetPartById(blip.Embed!.Value!));
+                using var imageStream = image.GetStream();
+                using var bytes = new MemoryStream();
+                imageStream.CopyTo(bytes);
+                if (index != 2 || blip != blips.Last())
+                {
+                    Assert.Equal(expectedImage, bytes.ToArray());
+                }
+                else
+                {
+                    Assert.True(ContainsDarkPixels(bytes.ToArray()));
+                }
+            }
+        }
+
+        var ids = owners.SelectMany(static owner => owner.RootElement!.Descendants<DW.DocProperties>())
+            .Select(static properties => properties.Id!.Value).ToArray();
+        Assert.Equal(ids.Length, ids.Distinct().Count());
+        Assert.Empty(new OpenXmlValidator().Validate(result));
+    }
+
     private static byte[] CreateTemplateWithExistingDrawingIds(
         IReadOnlyCollection<uint> bodyDrawingIds,
         uint? headerDrawingId,

@@ -104,11 +104,11 @@ internal sealed class OpenXmlTemplateRenderer
 
     public void RenderDocument(Body body, TemplateContext context)
     {
-        RenderContainer(body, context);
+        RenderContainer(body, context, _mainDocumentPart);
         RenderHeaderFooterParts(context);
     }
 
-    public void RenderContainer(OpenXmlCompositeElement container, TemplateContext context)
+    private void RenderContainer(OpenXmlCompositeElement container, TemplateContext context, OpenXmlPart storyPart)
     {
         var sourceChildren = container.ChildElements.Cast<OpenXmlElement>().ToList();
         var renderedChildren = new List<OpenXmlElement>();
@@ -129,7 +129,7 @@ internal sealed class OpenXmlTemplateRenderer
                     foreach (var item in ExpressionEvaluator.ToLoopItems(loopData))
                     {
                         var itemContext = new TemplateContext(item, _rootData, context);
-                        RenderBlock(blockTemplates, renderedChildren, itemContext);
+                        RenderBlock(blockTemplates, renderedChildren, itemContext, storyPart);
                     }
                 }
                 else if (marker.Kind == ControlMarkerKind.IfStart)
@@ -137,7 +137,7 @@ internal sealed class OpenXmlTemplateRenderer
                     var conditionValue = ExpressionEvaluator.Evaluate(marker.Expression, context);
                     if (ExpressionEvaluator.IsTruthy(conditionValue))
                     {
-                        RenderBlock(blockTemplates, renderedChildren, context);
+                        RenderBlock(blockTemplates, renderedChildren, context, storyPart);
                     }
                 }
 
@@ -151,7 +151,7 @@ internal sealed class OpenXmlTemplateRenderer
             }
 
             var cloned = candidate.CloneNode(true);
-            RenderElement(cloned, context);
+            RenderElement(cloned, context, storyPart);
             renderedChildren.Add(cloned);
         }
 
@@ -214,40 +214,41 @@ internal sealed class OpenXmlTemplateRenderer
     private void RenderBlock(
         IReadOnlyCollection<OpenXmlElement> blockTemplates,
         ICollection<OpenXmlElement> renderedChildren,
-        TemplateContext context)
+        TemplateContext context,
+        OpenXmlPart storyPart)
     {
         foreach (var blockTemplate in blockTemplates)
         {
             var clone = blockTemplate.CloneNode(true);
-            RenderElement(clone, context);
+            RenderElement(clone, context, storyPart);
             renderedChildren.Add(clone);
         }
     }
 
-    private void RenderElement(OpenXmlElement element, TemplateContext context)
+    private void RenderElement(OpenXmlElement element, TemplateContext context, OpenXmlPart storyPart)
     {
         if (element is TextBoxContent textBoxContent)
         {
-            RenderContainer(textBoxContent, context);
+            RenderContainer(textBoxContent, context, storyPart);
             return;
         }
 
         if (element is Paragraph paragraph
-            && ImageTemplateRenderer.TryRenderImageTag(paragraph, context, _mainDocumentPart, NextImageId))
+            && ImageTemplateRenderer.TryRenderImageTag(paragraph, context, storyPart, NextImageId))
         {
             return;
         }
 
         if (element is Paragraph paragraphElement)
         {
-            RenderNestedTextBoxContents(paragraphElement, context);
+            RenderNestedTextBoxContents(paragraphElement, context, storyPart);
             ReplaceInlineTags(paragraphElement, context);
             return;
         }
 
         if (element is OpenXmlCompositeElement composite)
         {
-            RenderContainer(composite, context);
+            RenderContainer(composite, context, storyPart);
         }
 
         ReplaceInlineTags(element, context);
@@ -262,7 +263,7 @@ internal sealed class OpenXmlTemplateRenderer
                 continue;
             }
 
-            RenderContainer(headerPart.Header, context);
+            RenderContainer(headerPart.Header, context, headerPart);
             headerPart.Header.Save();
         }
 
@@ -273,16 +274,16 @@ internal sealed class OpenXmlTemplateRenderer
                 continue;
             }
 
-            RenderContainer(footerPart.Footer, context);
+            RenderContainer(footerPart.Footer, context, footerPart);
             footerPart.Footer.Save();
         }
     }
 
-    private void RenderNestedTextBoxContents(OpenXmlElement element, TemplateContext context)
+    private void RenderNestedTextBoxContents(OpenXmlElement element, TemplateContext context, OpenXmlPart storyPart)
     {
         foreach (var textBoxContent in element.Descendants<TextBoxContent>().ToList())
         {
-            RenderContainer(textBoxContent, context);
+            RenderContainer(textBoxContent, context, storyPart);
         }
     }
 

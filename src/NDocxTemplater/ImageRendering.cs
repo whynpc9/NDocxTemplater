@@ -24,7 +24,7 @@ internal static class ImageTemplateRenderer
     public static bool TryRenderImageTag(
         Paragraph paragraph,
         TemplateContext context,
-        MainDocumentPart mainDocumentPart,
+        OpenXmlPart storyPart,
         Func<uint> nextImageId)
     {
         if (!ImageTagParser.TryParseParagraph(paragraph, out var imageTag))
@@ -46,7 +46,7 @@ internal static class ImageTemplateRenderer
 
         foreach (var image in images)
         {
-            paragraph.Append(CreateImageRun(mainDocumentPart, image, nextImageId()));
+            paragraph.Append(CreateImageRun(storyPart, image, nextImageId()));
         }
 
         return true;
@@ -68,15 +68,15 @@ internal static class ImageTemplateRenderer
         properties.Justification = new Justification { Val = JustificationValues.Center };
     }
 
-    private static Run CreateImageRun(MainDocumentPart mainDocumentPart, ImagePayload image, uint imageId)
+    private static Run CreateImageRun(OpenXmlPart storyPart, ImagePayload image, uint imageId)
     {
-        var imagePart = mainDocumentPart.AddImagePart(image.ImagePartType);
+        var imagePart = storyPart.AddNewPart<ImagePart>(image.ImagePartType.ContentType);
         using (var imageStream = new MemoryStream(image.Bytes, writable: false))
         {
             imagePart.FeedData(imageStream);
         }
 
-        var relationId = mainDocumentPart.GetIdOfPart(imagePart);
+        var relationId = storyPart.GetIdOfPart(imagePart);
         var drawing = CreateDrawing(relationId, image.WidthPx, image.HeightPx, imageId);
         return new Run(drawing);
     }
