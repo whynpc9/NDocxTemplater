@@ -8,6 +8,9 @@ on:
 
 jobs:
   publish:
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
 
     steps:
@@ -31,5 +34,11 @@ jobs:
       - name: Pack
         run: dotnet pack src/NDocxTemplater/NDocxTemplater.csproj -c Release --no-build -o artifacts
 
+      - name: NuGet login (OIDC)
+        id: nuget-login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1
+        with:
+          user: whynpc
+
       - name: Publish to NuGet
-        run: dotnet nuget push "artifacts/*.nupkg" --source "https://api.nuget.org/v3/index.json" --api-key "${{ secrets.NUGET_API_KEY }}" --skip-duplicate
+        run: dotnet nuget push "artifacts/*.nupkg" --source "https://api.nuget.org/v3/index.json" --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --skip-duplicate
