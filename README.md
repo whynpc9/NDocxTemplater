@@ -222,7 +222,19 @@ File.WriteAllBytes("output.pptx", outputBytes);
 
 - CI：`build + test + lint(dotnet format)`
 - 发布：打 tag（如 `v0.1.0`）或手动触发 `Publish NuGet` workflow
-- NuGet API Key 使用仓库 Secret：`NUGET_API_KEY`
+- 认证使用 NuGet Trusted Publishing：发布 job 通过 GitHub OIDC 获取短期 API Key，无需仓库 `NUGET_API_KEY` Secret
+- 工作流在打包后调用固定提交版本的 `NuGet/login`，使用 NuGet 用户名 `whynpc`，随后通过 `steps.nuget-login.outputs.NUGET_API_KEY` 推送包
+
+NuGet.org 的 Trusted Publishing policy 必须与工作流匹配：
+
+| 配置项 | 值 |
+| --- | --- |
+| Repository Owner | `whynpc9` |
+| Repository | `NDocxTemplater` |
+| Workflow File | `publish-nuget.yml`（只填文件名） |
+| Environment | 留空（当前 job 未设置 environment） |
+
+发布 job 必须保留 `contents: read` 和 `id-token: write` 权限。后续合并发布分支时，需同时保留版本/包身份校验与 OIDC 登录步骤，不要恢复长期 API Key 认证。配置说明见 [NuGet 官方文档](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing)。
 
 ## Examples
 
